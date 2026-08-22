@@ -40,6 +40,55 @@ REF_OUTPUT_FIELDS = (
     "non_diegetic_music",
 )
 
+#: Widget label -> how the language is named *to the model*, which is asked in
+#: English because that is what the surrounding instruction is written in. Both
+#: prompt paths read this so the two menus cannot drift apart, and insertion
+#: order is menu order.
+#:
+#: ``ENGLISH_OUTPUT_LANGUAGE`` is the one entry with no directive attached: it is
+#: the original behaviour, and both paths special-case it to emit their system
+#: prompt untouched rather than adding "write in English" to a guide that is
+#: already English.
+ENGLISH_OUTPUT_LANGUAGE = "English"
+
+OUTPUT_LANGUAGE_NAMES = {
+    "繁體中文": "Traditional Chinese (繁體中文)",
+    "简体中文": "Simplified Chinese (简体中文)",
+    ENGLISH_OUTPUT_LANGUAGE: "English",
+    "日本語": "Japanese (日本語)",
+    "한국어": "Korean (한국어)",
+}
+
+#: What goes inside the guide's ``<d>[...]</d>`` dialogue tag, which is a *language*
+#: tag driving how H3 pronounces the line -- not decoration. Chinese dialogue left
+#: tagged ``[English]`` gets read aloud as English, so this is tracked separately
+#: from the prose language: both Chinese entries share one tag, and the guide's own
+#: examples show the script inside the tag staying whatever the user wrote.
+OUTPUT_LANGUAGE_TAGS = {
+    "繁體中文": "Chinese",
+    "简体中文": "Chinese",
+    ENGLISH_OUTPUT_LANGUAGE: "English",
+    "日本語": "Japanese",
+    "한국어": "Korean",
+}
+
+DEFAULT_OUTPUT_LANGUAGE = "繁體中文"
+
+
+def language_name(language: str) -> str:
+    """The model-facing name for a widget label, tolerating an unknown one."""
+    return OUTPUT_LANGUAGE_NAMES.get(
+        language or "", OUTPUT_LANGUAGE_NAMES[DEFAULT_OUTPUT_LANGUAGE]
+    )
+
+
+def language_tag(language: str) -> str:
+    """The ``<d>[...]`` tag for a widget label, tolerating an unknown one."""
+    return OUTPUT_LANGUAGE_TAGS.get(
+        language or "", OUTPUT_LANGUAGE_TAGS[DEFAULT_OUTPUT_LANGUAGE]
+    )
+
+
 MODELS_SUBDIR = "LLM"
 
 #: transformers' set_seed feeds numpy, whose legacy seeding refuses anything at

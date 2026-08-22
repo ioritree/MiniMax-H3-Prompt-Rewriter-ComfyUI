@@ -30,16 +30,20 @@ from .constants import (
     ATTN_IMPLEMENTATIONS,
     BASE_MODEL_REPO,
     BASE_SKIP_SUFFIXES,
+    DEFAULT_OUTPUT_LANGUAGE,
     DURATION_MAX,
     DURATION_MIN,
+    ENGLISH_OUTPUT_LANGUAGE,
     GGUF_RUNTIMES,
     OUTPUT_FIELDS,
+    OUTPUT_LANGUAGE_NAMES,
     QUANTIZATIONS,
     REF_OUTPUT_FIELDS,
     RESOLUTIONS,
     RUNTIME_AUTO,
     RUNTIME_BINARY,
     RUNTIME_WHEEL,
+    language_name,
 )
 from .fields import missing, split_fields, split_sections
 from .paths import (
@@ -752,6 +756,7 @@ class MiniMaxH3PromptRewriter:
             "optional": {
                 "options": (OPTIONS_TYPE,),
                 "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_TOOLTIP}),
+                "output_language": _language_widget(LORA_LANGUAGE_TOOLTIP),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -773,6 +778,7 @@ class MiniMaxH3PromptRewriter:
         keep_model_loaded,
         options=None,
         bypass=False,
+        output_language=DEFAULT_OUTPUT_LANGUAGE,
         unique_id=None,
     ):
         if bypass:
@@ -789,7 +795,7 @@ class MiniMaxH3PromptRewriter:
         choice = _resolve_model_choice(model)
 
         decoding = {
-            "messages": build_messages(prompt, resolution, int(duration)),
+            "messages": build_messages(prompt, resolution, int(duration), output_language),
             "seed": int(seed),
             "greedy": greedy,
             "max_new_tokens": int(settings["max_new_tokens"]),
@@ -887,6 +893,31 @@ REFERENCE_ASSETS_PLACEHOLDER = (
 )
 
 
+OUTPUT_LANGUAGE_TOOLTIP = (
+    "Language of the rewritten description. Field names, [Shot N] markers and the "
+    "alignment line always stay English — the node splits the answer on them. "
+    "MiniMax-H3 itself accepts non-English prompts, but the writing guide is English "
+    "throughout, so a small writer model may still drift back; raise the model size "
+    "if it does."
+)
+
+
+LORA_LANGUAGE_TOOLTIP = (
+    "Language of the rewritten description. Field names and [Shot N] markers always "
+    "stay English — the node splits the answer on them. This node runs a LoRA trained "
+    "on English rewrites, so a non-English choice is an instruction the adapter never "
+    "saw in training and it holds less firmly here than on the Guided Writer nodes; "
+    "'English' sends the trained prompt untouched."
+)
+
+
+def _language_widget(tooltip: str = OUTPUT_LANGUAGE_TOOLTIP) -> tuple:
+    return (
+        list(OUTPUT_LANGUAGE_NAMES),
+        {"default": DEFAULT_OUTPUT_LANGUAGE, "tooltip": tooltip},
+    )
+
+
 def _guided_text(
     mode: str,
     model: str,
@@ -899,6 +930,7 @@ def _guided_text(
     keep_model_loaded: bool,
     settings: dict,
     progress: NodeProgress,
+    language: str = DEFAULT_OUTPUT_LANGUAGE,
 ) -> str:
     """Run one guided rewrite and return the model's raw answer."""
     choice = _resolve_writer_choice(model)
@@ -919,7 +951,7 @@ def _guided_text(
         guide_prompt.GUIDE_FOR_MODE[mode], settings["auto_download"], progress
     )
     messages = guide_prompt.build_messages(
-        guide, mode, prompt, resolution, int(duration), references
+        guide, mode, prompt, resolution, int(duration), references, language
     )
 
     max_new_tokens = int(settings["max_new_tokens"])
@@ -1093,6 +1125,10 @@ class MiniMaxH3GuidedWriter:
                 ),
                 "options": (OPTIONS_TYPE,),
                 "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_TOOLTIP}),
+                # Appended rather than slotted in beside 'task': ComfyUI stores widget
+                # values positionally, so a new widget anywhere but the end shifts every
+                # value in workflows saved before it existed.
+                "output_language": _language_widget(),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -1115,6 +1151,7 @@ class MiniMaxH3GuidedWriter:
         reference_material="",
         options=None,
         bypass=False,
+        output_language=DEFAULT_OUTPUT_LANGUAGE,
         unique_id=None,
     ):
         if bypass:
@@ -1127,7 +1164,7 @@ class MiniMaxH3GuidedWriter:
 
         text = _guided_text(
             task, model, prompt, resolution, duration, reference_material,
-            greedy, seed, keep_model_loaded, settings, progress,
+            greedy, seed, keep_model_loaded, settings, progress, output_language,
         )
         _head, sections = split_sections(text, OUTPUT_FIELDS)
         _report(progress, text, sections, OUTPUT_FIELDS)
@@ -1221,6 +1258,7 @@ class MiniMaxH3GuidedWriterRef:
             "optional": {
                 "options": (OPTIONS_TYPE,),
                 "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_TOOLTIP}),
+                "output_language": _language_widget(),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -1242,6 +1280,7 @@ class MiniMaxH3GuidedWriterRef:
         keep_model_loaded,
         options=None,
         bypass=False,
+        output_language=DEFAULT_OUTPUT_LANGUAGE,
         unique_id=None,
     ):
         if bypass:
@@ -1254,7 +1293,7 @@ class MiniMaxH3GuidedWriterRef:
 
         text = _guided_text(
             guide_prompt.REF_MODE, model, prompt, resolution, duration, reference_assets,
-            greedy, seed, keep_model_loaded, settings, progress,
+            greedy, seed, keep_model_loaded, settings, progress, output_language,
         )
         _head, sections = split_sections(text, REF_OUTPUT_FIELDS, fallback="detailed_description")
         _report(progress, text, sections, REF_OUTPUT_FIELDS)
@@ -1354,6 +1393,7 @@ class MiniMaxH3GuidePrompt:
                         ),
                     },
                 ),
+                "output_language": _language_widget(),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -1372,12 +1412,13 @@ class MiniMaxH3GuidePrompt:
         reference_material="",
         auto_download=True,
         format="plain",
+        output_language=DEFAULT_OUTPUT_LANGUAGE,
         unique_id=None,
     ):
         progress = NodeProgress(unique_id)
         guide = guides.text(guide_prompt.GUIDE_FOR_MODE[task], auto_download, progress)
         messages = guide_prompt.build_messages(
-            guide, task, prompt, resolution, int(duration), reference_material
+            guide, task, prompt, resolution, int(duration), reference_material, output_language
         )
         system, user = messages[0]["content"], messages[1]["content"]
         joined = single_prompt(system, user, format)
@@ -1414,6 +1455,27 @@ CAPTION_INSTRUCTIONS = {
     ),
 }
 
+CAPTION_LANGUAGE_TOOLTIP = (
+    "Language of the caption text. Captions are intermediate: they land in "
+    "reference_material and the writer node rewrites them, so this mainly decides what "
+    "you read on the node — though matching the writer's language does remove one pull "
+    "back towards English. Asset labels ('Picture 1:') stay English either way, because "
+    "the writer's guide numbers assets by them."
+)
+
+
+def caption_language_clause(language: str) -> str:
+    """The sentence appended to a caption request, empty for English.
+
+    Empty rather than "answer in English" on purpose: the role instructions are
+    already English and the captioner answers in kind, so the default path sends
+    exactly the string it always sent.
+    """
+    if language == ENGLISH_OUTPUT_LANGUAGE:
+        return ""
+    return f" Write the description in {language_name(language)}."
+
+
 CAPTION_LENGTHS = {
     "brief": "Answer in one sentence.",
     "standard": "Answer in two or three sentences.",
@@ -1421,6 +1483,17 @@ CAPTION_LENGTHS = {
 }
 
 _ASSET_LINE = re.compile(r"^[ \t]*(Subject|Picture|Video|Audio)[ \t]+(\d+)[ \t]*:", re.IGNORECASE | re.MULTILINE)
+
+#: What is left when a reasoning model spends the whole budget inside its
+#: ``<think>`` block and the answer is cut off before it starts. The reasoning
+#: is dropped rather than shipped (see :func:`fields.answer_only`), so nothing
+#: comes back -- and a label with no description behind it is worse than no
+#: label, because the writer downstream would read it as a real reference.
+EMPTY_CAPTION_HINT = (
+    "The captioner returned only reasoning: it filled the whole token budget with its "
+    "<think> block and never wrote the description. Raise max_new_tokens in the options "
+    "node, or pick a captioner that does not reason."
+)
 
 
 def next_index(previous: str, role: str) -> int:
@@ -1528,6 +1601,7 @@ class MiniMaxH3ReferenceCaption:
                         "tooltip": "Override what the model is asked. Empty uses the role's own question.",
                     },
                 ),
+                "caption_language": _language_widget(CAPTION_LANGUAGE_TOOLTIP),
                 "max_frames": (
                     "INT",
                     {
@@ -1579,6 +1653,7 @@ class MiniMaxH3ReferenceCaption:
         previous="",
         description="",
         instruction="",
+        caption_language=DEFAULT_OUTPUT_LANGUAGE,
         max_frames=media.DEFAULT_MAX_FRAMES,
         context_size=mtmd_engine.CONTEXT_FROM_MODEL,
         options=None,
@@ -1602,7 +1677,7 @@ class MiniMaxH3ReferenceCaption:
                     f"or type the description into 'description'."
                 )
             asked = (instruction or "").strip() or CAPTION_INSTRUCTIONS[role]
-            asked = f"{asked} {CAPTION_LENGTHS[length]}"
+            asked = f"{asked} {CAPTION_LENGTHS[length]}{caption_language_clause(caption_language)}"
 
             if clip is not None:
                 kinds = set()
@@ -1670,6 +1745,8 @@ class MiniMaxH3ReferenceCaption:
                 )
 
         caption = " ".join(caption.split())
+        if not caption:
+            raise RuntimeError(EMPTY_CAPTION_HINT)
         line = f"{role} {next_index(previous, role)}: {caption}"
         block = f"{(previous or '').rstrip()}\n{line}".strip()
         progress.finish(line)

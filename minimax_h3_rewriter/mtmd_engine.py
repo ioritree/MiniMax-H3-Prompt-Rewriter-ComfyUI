@@ -32,6 +32,7 @@ import os
 
 from . import devices, llamacpp, media, runner
 from .constants import normalize_seed
+from .fields import answer_only
 from .progress import NodeProgress
 
 log = logging.getLogger(__name__)
@@ -65,6 +66,10 @@ def build_command(
     device: str = devices.AUTO,
 ) -> list[str]:
     layers = devices.layers_for(device, gpu_layers)
+    # Keep asking for every layer rather than letting llama.cpp fit the run to
+    # the free VRAM itself: left to it, a big model keeps its full context and
+    # spills half the weights to the CPU, which measures 20x slower than the
+    # same model held whole with a small context. Trim context_size instead.
     layers = ALL_LAYERS if layers < 0 else layers
     command = [
         binary,
@@ -92,6 +97,30 @@ def build_command(
     # Last, so the instruction is never mistaken for a value of another flag.
     command += ["--prompt", instruction]
     return command
+
+
+FALLBACK_CONTEXT = 8192
+
+
+def failure_hint(stderr_text: str, n_ctx: int) -> str:
+    """The advice that fits the way the child actually died."""
+    if runner.out_of_memory(stderr_text):
+        if int(n_ctx) == CONTEXT_FROM_MODEL:
+            return (
+                f"The card ran out of room. context_size is 0, which means the model's own "
+                f"context, and on a large model that KV cache alone is gigabytes on top of the "
+                f"weights. Set context_size on this node to {FALLBACK_CONTEXT} and run again; "
+                f"lower gpu_layers in the options node only if that is still not enough."
+            )
+        return (
+            f"The card ran out of room at context_size {int(n_ctx)}. Halve it, or lower "
+            f"gpu_layers in the options node to keep part of the model on the CPU."
+        )
+    return (
+        "Not every multimodal GGUF works here: llama.cpp's mtmd has to understand the "
+        "projector format, and several current models abort while loading it. Pick an entry "
+        "from the captioner list, which names the ones this pack has been run against."
+    )
 
 
 def clip_note(count: int, seconds: float) -> str:
@@ -201,13 +230,24 @@ def describe(
         try:
             text, stderr_text = runner.run(command, binary, report)
         except runner.ChildFailed as error:
-            raise RuntimeError(
-                f"{error}\n\nNot every multimodal GGUF works here: llama.cpp's mtmd has to "
-                f"understand the projector format, and several current models abort while "
-                f"loading it. Pick an entry from the captioner list, which names the ones this "
-                f"pack has been run against."
-            ) from error
+            raise RuntimeError(f"{error}\n\n{failure_hint(str(error), n_ctx)}") from error
 
     if progress is not None:
         progress.finish(f"Done · {len(text)} chars{runner.speed(stderr_text)}")
-    return text
+
+    # The reasoning is cut here rather than at the caller, so both caption nodes
+    # get it, and after the progress line so the raw length still shows how much
+    # of the budget the model spent thinking. mtmd-cli applies the chat template
+    # itself and b10310 has no ``--chat-template-kwargs``, so there is no
+    # ``enable_thinking=False`` to forward on this route -- a thinking build
+    # writes the block whatever the instruction says.
+    answer = answer_only(text)
+    if text and not answer:
+        log.warning(
+            "[minimax_h3_rewriter.mtmd_engine] %s spent the whole %d-token budget on an "
+            "unfinished <think> block and never wrote the answer. Raise max_new_tokens in the "
+            "options node, or pick a captioner that does not reason.",
+            os.path.basename(model_path),
+            int(max_new_tokens),
+        )
+    return answer

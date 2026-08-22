@@ -30,25 +30,32 @@ its nodes, so an old install loses this node alone instead of all of them.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 
 from comfy_api.latest import io
 
 from . import clip_caption, discovery, media, mtmd_engine
+from .constants import DEFAULT_OUTPUT_LANGUAGE, OUTPUT_LANGUAGE_NAMES
 from .nodes import (
     BYPASS_CAPTION_TOOLTIP,
+    EMPTY_CAPTION_HINT,
     CAPTION_INSTRUCTIONS,
+    CAPTION_LANGUAGE_TOOLTIP,
     CAPTION_LENGTHS,
     CATEGORY,
     DEFAULT_OPTIONS,
     OPTIONS_TYPE,
     _ensure_pair,
     _resolve_captioner_choice,
+    caption_language_clause,
     captioner_choices,
     next_index,
 )
 from .progress import NodeProgress
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -308,6 +315,13 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
                     optional=True,
                     tooltip=BYPASS_CAPTION_TOOLTIP,
                 ),
+                io.Combo.Input(
+                    "caption_language",
+                    options=list(OUTPUT_LANGUAGE_NAMES),
+                    default=DEFAULT_OUTPUT_LANGUAGE,
+                    optional=True,
+                    tooltip=CAPTION_LANGUAGE_TOOLTIP,
+                ),
             ],
             outputs=[
                 io.String.Output(display_name="reference_assets"),
@@ -333,6 +347,7 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
         max_frames=media.DEFAULT_MAX_FRAMES,
         context_size=mtmd_engine.CONTEXT_FROM_MODEL,
         bypass=False,
+        caption_language=DEFAULT_OUTPUT_LANGUAGE,
     ) -> io.NodeOutput:
         progress = NodeProgress(cls.hidden.unique_id)
         block = (previous or "").strip()
@@ -380,6 +395,7 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
 
         progress.set_total(len(assets))
         captions = []
+        empty = 0
         for done, asset in enumerate(assets):
             index = next_index(block, asset.role)
             frames = asset.kind == "video" and _is_frames(asset.value)
@@ -388,7 +404,10 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
                 f"{asset.role} {index}: reading {asset.slot} ({done + 1} of {len(assets)})",
             )
 
-            asked = f"{CAPTION_INSTRUCTIONS[asset.role]} {CAPTION_LENGTHS[length]}"
+            asked = (
+                f"{CAPTION_INSTRUCTIONS[asset.role]} {CAPTION_LENGTHS[length]}"
+                f"{caption_language_clause(caption_language)}"
+            )
             as_image = asset.value if asset.kind == "image" or frames else None
             as_audio = asset.value if asset.kind == "audio" else None
             as_video = None if frames else (asset.value if asset.kind == "video" else None)
@@ -429,10 +448,24 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
                 )
 
             caption = " ".join(caption.split())
+            if not caption:
+                # One asset that wrote nothing but reasoning must not cost the
+                # ones already described, so this is a skipped line rather than
+                # a raised error -- but the label goes with it: an empty
+                # 'Picture 2:' would be read downstream as a real reference.
+                empty += 1
+                log.warning(
+                    "[minimax_h3_rewriter.multi_caption] %s: %s", asset.slot, EMPTY_CAPTION_HINT
+                )
+                continue
             captions.append(caption)
             block = f"{block}\n{asset.role} {index}: {caption}".strip()
 
-        note = f"{len(assets)} described" + (f", {skipped} switched off" if skipped else "")
+        note = f"{len(assets) - empty} described"
+        if empty:
+            note += f", {empty} wrote only reasoning"
+        if skipped:
+            note += f", {skipped} switched off"
         progress.update(len(assets), f"{note}\n{block}")
         return io.NodeOutput(block, "\n".join(captions))
 
