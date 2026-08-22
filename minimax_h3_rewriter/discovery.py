@@ -407,7 +407,10 @@ def gguf_header(path: str) -> dict:
     Cached per file identity, so a folder of large quants costs no more than a
     stat each after the first pass.
     """
-    empty = {"arch": "", "kind": "", "blocks": None, "width": None, "vision": False, "audio": False}
+    empty = {
+        "arch": "", "kind": "", "blocks": None, "width": None,
+        "nextn": 0, "vision": False, "audio": False,
+    }
     try:
         stat = os.stat(path)
     except OSError:
@@ -423,7 +426,13 @@ def gguf_header(path: str) -> dict:
 
         def also(found: dict) -> tuple[str, ...]:
             arch = found.get("general.architecture")
-            return (f"{arch}.block_count", f"{arch}.embedding_length") if arch else ()
+            if not arch:
+                return ()
+            return (
+                f"{arch}.block_count",
+                f"{arch}.embedding_length",
+                f"{arch}.nextn_predict_layers",
+            )
 
         value = gguf_meta.keys(path, HEADER_KEYS, probe=also, verify=True).get
 
@@ -436,8 +445,10 @@ def gguf_header(path: str) -> dict:
         if header["arch"]:
             blocks = value(f"{header['arch']}.block_count")
             width = value(f"{header['arch']}.embedding_length")
+            nextn = value(f"{header['arch']}.nextn_predict_layers")
             header["blocks"] = int(blocks) if blocks is not None else None
             header["width"] = int(width) if width is not None else None
+            header["nextn"] = int(nextn) if nextn is not None else 0
     except Exception:
         log.debug("[minimax_h3_rewriter.gguf_header] %s unreadable", path, exc_info=True)
 
@@ -486,9 +497,24 @@ def gguf_problem(
     blocks, width = header["blocks"], header["width"]
     if blocks is None or width is None:
         return ""
-    if blocks != blocks_wanted or width != width_wanted:
+
+    # A multi-token-prediction build declares one block more than it has layers:
+    # the extra one is the MTP head, and llama.cpp itself drops it -- b10310
+    # loads qwen3.8-27b-abliterated-3.69bpw-12GB-MTP with fifteen "model has
+    # unused tensor blk.64.*, ignoring" lines and then runs 64 layers. The
+    # adapter's tensors all land in blk.0-63, which are the same shape there as
+    # in Qwen3.6-27B, so it attaches and generates. Counting the head as a block
+    # refused a model that works, so it is subtracted before the comparison.
+    dense = blocks - int(header.get("nextn") or 0)
+    if dense != blocks_wanted or width != width_wanted:
+        counted = (
+            f"{blocks} blocks of width {width}"
+            if dense == blocks
+            else f"{blocks} blocks of width {width} ({dense} of them layers, "
+                 f"{blocks - dense} an MTP head)"
+        )
         return (
-            f"'{os.path.basename(path)}' has {blocks} blocks of width {width}; the adapter was "
+            f"'{os.path.basename(path)}' has {counted}; the adapter was "
             f"trained on {blocks_wanted} of {width_wanted} ({base}). It shares the '{arch}' "
             f"architecture but not the shape, so llama.cpp cannot attach the LoRA to it — "
             f"the model will run, but as a plain one with no rewriter."
