@@ -14,19 +14,6 @@ upstream has not cut would make a version comparison read this checkout as
 newer than the repo it came from. If any of it goes upstream, the heading
 becomes a real version there.
 
-### Fixed
-
-- **A multi-token-prediction build is no longer refused the rewriter LoRA.**
-  `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP` declares `block_count = 65`, and
-  the check compared that with the adapter's 64 and refused it. The extra block
-  is the MTP head, not a layer: `nextn_predict_layers = 1`, and llama.cpp b10310
-  drops it on load with fifteen `model has unused tensor blk.64.*, ignoring`
-  lines before running 64 layers. Its `blk.0-63` carry the same tensors at the
-  same dimensions as Qwen3.6-27B, the adapter's every target exists in them, and
-  a `llama-completion --lora` run against that pair attaches and generates. So
-  `nextn_predict_layers` is subtracted before the comparison, and a real shape
-  mismatch is still refused by name — a Qwen3.5-9B at 32 blocks of 4096 still is.
-
 ### Added
 
 - **`MiniMax-H3 Reference Writer (Ref2VA)`, the reading and the writing in one
@@ -64,6 +51,23 @@ becomes a real version there.
   failure in either lost both.
 
 ### Fixed
+
+- **A multi-token-prediction build is no longer refused the rewriter LoRA.**
+  `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP` declares `block_count = 65`, and
+  the check compared that with the adapter's 64 and refused it. The extra block
+  is the MTP head, not a layer: `nextn_predict_layers = 1`, and llama.cpp b10310
+  drops it on load with fifteen `model has unused tensor blk.64.*, ignoring`
+  lines before running 64 layers. Its `blk.0-63` carry the same tensors at the
+  same dimensions as Qwen3.6-27B, the adapter's every target exists in them, and
+  a `llama-completion --lora` run against that pair attaches and generates. So
+  `nextn_predict_layers` is subtracted before the comparison, and a real shape
+  mismatch is still refused by name — a Qwen3.5-9B at 32 blocks of 4096 still is.
+
+  Attaching is not the same as helping, so that was checked too: the same T2VA
+  prompt through `llama-completion` at `--temp 0`, once with `--lora` and once
+  without, comes back visibly different — 2,907 characters against 2,171, and a
+  different shot breakdown — so the adapter is doing work on this base rather
+  than sitting inert. Both runs produce the three fields correctly.
 
 - **A reasoning model's `<think>` block reached `reference_assets` on the GGUF
   caption route.** `clip_caption` has cut the thought channel since Gemma-4 E4B

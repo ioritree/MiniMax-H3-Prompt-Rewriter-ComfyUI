@@ -505,8 +505,14 @@ def gguf_problem(
     # adapter's tensors all land in blk.0-63, which are the same shape there as
     # in Qwen3.6-27B, so it attaches and generates. Counting the head as a block
     # refused a model that works, so it is subtracted before the comparison.
+    # Either convention counts as a match: a build whose ``block_count`` already
+    # excludes the head passes on ``blocks``, one that includes it passes on
+    # ``dense``. Accepting both is strictly more permissive than the count alone,
+    # so nothing that used to load is refused now, and llama.cpp still catches a
+    # genuine mismatch at load — which is the fallback this guard exists to make
+    # legible, not to replace.
     dense = blocks - int(header.get("nextn") or 0)
-    if dense != blocks_wanted or width != width_wanted:
+    if blocks_wanted not in (blocks, dense) or width != width_wanted:
         counted = (
             f"{blocks} blocks of width {width}"
             if dense == blocks
