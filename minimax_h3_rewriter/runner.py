@@ -65,6 +65,23 @@ class ChildFailed(RuntimeError):
     """The subprocess stalled, crashed, or exited non-zero."""
 
 
+#: Phrases llama.cpp prints when the card runs out of room, in any of the
+#: three places it can happen: the weights, the compute buffer, the KV cache.
+OUT_OF_MEMORY_MARKERS = (
+    "out of memory",
+    "cudamalloc failed",
+    "failed to allocate buffer for kv cache",
+    "alloc_tensor_range: failed to allocate",
+    "vk::device::allocatememory",
+)
+
+
+def out_of_memory(text: str) -> bool:
+    """True when the child died for want of VRAM rather than a bad model."""
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in OUT_OF_MEMORY_MARKERS)
+
+
 def free_comfy_vram(device: str = "auto") -> None:
     """Evict ComfyUI's models, unless this run is going somewhere else entirely.
 

@@ -8,6 +8,7 @@ const BYPASS_NODES = [
     "MiniMaxH3ReferenceCaption",
     "MiniMaxH3MultiReferenceCaption",
     "MiniMaxH3UniversalWriter",
+    "MiniMaxH3ReferenceWriterRef",
 ];
 
 const WIDGET = "bypass";

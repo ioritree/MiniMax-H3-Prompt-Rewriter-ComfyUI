@@ -45,7 +45,9 @@ per asset on a 3.4 GB model. When a whole shot's worth of references is waiting,
 [Multi Reference Caption](#minimax-h3-multi-reference-caption) does all of them at
 once — or [Universal Writer](#minimax-h3-universal-writer) describes them and writes
 the prompt in the same node, with their order a widget you can drag rather than a
-consequence of which slot you happened to use. The 8B rewriter needs none of that
+consequence of which slot you happened to use, and
+[Reference Writer (Ref2VA)](#minimax-h3-reference-writer-ref2va) does the same pair
+of jobs for Ref2VA alone. The 8B rewriter needs none of that
 for its reference *frames*: connect the picture and it reads it.
 
 If your card has 8 GB, skip to [the writer nodes](#minimax-h3-prompt-writer-t2vai2vafl2val2va).
@@ -664,6 +666,15 @@ Other inputs:
 > A model and its `mmproj` sitting together in one folder under `models/LLM` is
 > offered automatically, so you can try another without editing anything.
 
+**A reasoning captioner is handled, not refused.** Qwen3-VL and Gemma-4 E4B write
+a `<think>` block whatever the instruction says — on the GGUF route there is no
+way to ask them not to, since `llama-mtmd-cli` applies the chat template itself
+and carries no `enable_thinking` switch. Everything up to the closing tag is cut,
+so `reference_assets` gets the answer alone. The character count on the node
+stays the raw one, which is how you spot a model spending its budget on reasoning
+instead of on the description; if it spends *all* of it there and never writes
+one, the node says so rather than emitting an empty label.
+
 ### MiniMax-H3 Multi Reference Caption
 
 The same job for a whole shot, in one box. A chain is exact, but it grows: five
@@ -718,9 +729,70 @@ you want to describe by hand or ask a different question about.
 > the v3 node API. On an older install it is the only node that goes missing —
 > the rest of the pack registers exactly as before.
 
+### MiniMax-H3 Reference Writer (Ref2VA)
+
+The reading and the writing in one box.
+[Multi Reference Caption](#minimax-h3-multi-reference-caption) turns the pixels
+into text, [Prompt Writer (Ref2VA)](#minimax-h3-prompt-writer-ref2va) turns that
+text into the six sections, and between them runs a single `reference_assets`
+wire. Once one model is good enough for both halves — a multimodal GGUF that also
+follows the writing guide — that wire is the only thing separating two nodes that
+always run together, each with its own options block, its own seed and its own
+output language to keep in step. This node is those two with the wire pulled out.
+
+![The Reference Writer node: seven reference slots down the left with a checkbox on each row and three pictures wired in, nine outputs down the right from rewritten_prompt through the six sections to reference_assets and captions, a prompt box reading "the characters in picture 1 and picture 2 fighting in the location of picture 3, very intense", and two model rows both pointing at Qwen3.8-27B-abliterated Q4_K_M — one with its mmproj, one without](docs/node_ref_writer.png)
+
+*Three pictures, captioned and written in one run — 242.8 s cold on a 3090, ~157 s
+once the weights are cached. The same two model menus point at the same file: one
+entry carries the `mmproj` and reads the images, the other does not and writes the
+prompt.*
+
+
+**It saves wiring, not time.** Two model menus, not one: `captioner` lists the
+multimodal pairs, `writer` lists every text GGUF. Point both at the same file and
+it is still two loads — the captioner runs through `llama-mtmd-cli` and the
+writer through `llama-completion`, and folding them into one box does not remove
+the second binary.
+
+Measured here on an RTX 3090, Qwen3.8-27B-abliterated `Q4_K_M` on both menus and
+three image references: **242.8 s** on the first run, **~157 s** on the next one
+with the weights still cached — which is what the same graph cost as two separate
+nodes (101 s captioning + 56 s writing). The saving is the wire, exactly as
+advertised.
+
+The four input groups, the labels they produce and the switch on each slot's own
+row are [Multi Reference Caption](#minimax-h3-multi-reference-caption)'s, so
+everything that section says about them holds here too. `clip` works the same way
+as well.
+
+| Output | What it carries |
+|---|---|
+| `rewritten_prompt` | the whole answer |
+| the six section outputs | `subject_definitions` … `non_diegetic_music`, split out |
+| `reference_assets` | the block the node built and handed the writer |
+| `captions` | the descriptions alone, one per line |
+
+`reference_assets` is an output rather than an internal detail on purpose: when a
+rewrite comes out wrong, the first question is what the writer was actually
+given.
+
+**One seed drives both halves** — the captions and the rewrite. That is the point
+of merging, and it is also the one thing a graph rebuilt from the two-node
+version cannot reproduce, since that one had a seed on each.
+
+**No references, no rewrite.** If every asset comes back without a description,
+the writer is not run at all: a Ref2VA prompt whose whole premise is its
+references would otherwise be composed from none, after a minute of generation
+nobody asked for. A single asset that fails is skipped instead, label and all,
+and the node's summary counts it.
+
+> **This node needs a recent ComfyUI**, for the same `io.Autogrow` reason. It and
+> `Multi Reference Caption` register independently, so a version that rejects one
+> still gets the other.
+
 ### Captioning with a model ComfyUI already has loaded
 
-Both caption nodes and the Universal Writer have a `clip` input. Connect a multimodal text encoder from
+Both caption nodes, the Universal Writer and `Reference Writer (Ref2VA)` have a `clip` input. Connect a multimodal text encoder from
 `CLIPLoader` and every asset is described by *that* model instead of by the GGUF
 in `model` — which then stays exactly where ComfyUI's allocator put it.
 

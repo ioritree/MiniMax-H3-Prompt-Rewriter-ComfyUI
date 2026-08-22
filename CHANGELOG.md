@@ -6,6 +6,73 @@ The version in `pyproject.toml`, the git tag and the release on GitHub always sa
 the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that neither changelog has a section for.
 
+## Unreleased — local, not a release
+
+Changes living in this working copy only. `pyproject.toml` stays on the
+upstream version: nothing here has been tagged, and claiming a version that
+upstream has not cut would make a version comparison read this checkout as
+newer than the repo it came from. If any of it goes upstream, the heading
+becomes a real version there.
+
+### Added
+
+- **`MiniMax-H3 Reference Writer (Ref2VA)`, the reading and the writing in one
+  node.** `Multi Reference Caption` turns the pixels into text and
+  `Prompt Writer (Ref2VA)` turns that text into the six sections; between them
+  runs a single `reference_assets` wire. Once one model is good enough for both
+  halves - a multimodal GGUF that also follows the writing guide - that wire is
+  the only thing separating two nodes that always run together, each with its
+  own options block, its own seed and its own output language to keep in step.
+  This node is those two with the wire pulled out.
+
+  Two model menus, not one: `captioner` lists the multimodal pairs, `writer`
+  lists every text GGUF. Point both at the same file and it still costs two
+  loads - the captioner runs through `llama-mtmd-cli` and the writer through
+  `llama-completion`, and no amount of folding removes the second binary. **What
+  this saves is wiring, not time.** Measured on an RTX 3090 with
+  Qwen3.8-27B-abliterated `Q4_K_M` on both menus and three image references:
+  242.8 s cold, ~157 s with the weights cached, against 101 s + 56 s for the same
+  graph as two nodes. The reference block it built is an output
+  too, so what the writer was given stays visible.
+
+  One seed drives both halves, which is the point of merging and also the one
+  thing a graph rebuilt from the two-node version cannot reproduce. And if every
+  asset comes back without a description, the writer is not run at all: a Ref2VA
+  prompt whose whole premise is its references would otherwise be composed from
+  none, after a minute of generation nobody asked for.
+
+  The input groups, the label rules and the encoder checks are
+  `Multi Reference Caption`'s own, imported rather than copied, so the two
+  cannot drift. Both caption nodes stay exactly as they were.
+
+  Like `Multi Reference Caption`, this node needs a recent ComfyUI for
+  `io.Autogrow`. The two are now registered independently, so a version that
+  rejects one still gets the other - previously one `try` covered both and a
+  failure in either lost both.
+
+### Fixed
+
+- **A reasoning model's `<think>` block reached `reference_assets` on the GGUF
+  caption route.** `clip_caption` has cut the thought channel since Gemma-4 E4B
+  turned out to fill it whatever the prompt says; `mtmd_engine` returned the
+  child's output untouched, so a caption from a thinking model arrived as
+  `Picture 1: <think> </think> ...` - or worse, with the whole analysis inside
+  the tags. Reported on Qwen3-VL, where it is not a wiring mistake and cannot be
+  switched off: `llama-mtmd-cli` applies the chat template itself, which is what
+  lets it place the media tokens, and b10310 has no `--chat-template-kwargs`, so
+  there is no `enable_thinking=False` to forward on this route.
+
+  `answer_only` now lives in `fields` and both routes use it. The strip happens
+  after the progress line, so the character count on the node is still the raw
+  one - which is how you see the budget going into reasoning rather than into
+  the answer.
+
+  When a model spends the whole budget inside an unclosed `<think>` and never
+  writes the description, there is nothing left to cut to. `Reference Caption`
+  raises and says so. `Multi Reference Caption` and `Reference Writer` skip that
+  asset and carry on - one asset must not cost the ones already described - and
+  drop its label with it, because an empty `Picture 2:` reads downstream as a
+  real reference. The node's summary counts them.
 ## 0.16.1 - 2026-08-22
 
 ### Added

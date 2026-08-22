@@ -2,7 +2,10 @@ import { app } from "../../scripts/app.js";
 import { addSlotSwitches, hideWidget } from "./slot_switches.js";
 
 
-const NODE = "MiniMaxH3MultiReferenceCaption";
+// Both nodes that grow the four reference groups: the caption-only one and
+// the one that captions and writes in the same run. They share the input
+// prefixes and the mask widget, so they share these switches too.
+const NODES = new Set(["MiniMaxH3MultiReferenceCaption", "MiniMaxH3ReferenceWriterRef"]);
 const MASK = "enabled_mask";
 const PREFIXES = ["subject_", "picture_", "video_", "audio_"];
 
@@ -55,6 +58,6 @@ function addSwitches(nodeType) {
 app.registerExtension({
     name: "minimax_h3_rewriter.multi_caption_switch",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name === NODE) addSwitches(nodeType);
+        if (NODES.has(nodeData.name)) addSwitches(nodeType);
     },
 });

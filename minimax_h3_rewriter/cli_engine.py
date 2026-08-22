@@ -172,6 +172,11 @@ def generate(
     try:
         text, stderr_text = runner.run(command, binary, report)
     except runner.ChildFailed as error:
+        if runner.out_of_memory(str(error)):
+            raise RuntimeError(
+                f"{error}\n\nThe card ran out of room. Lower context_size, or lower "
+                f"gpu_layers in the options node to keep part of the model on the CPU."
+            ) from error
         raise RuntimeError(str(error)) from error
     finally:
         try:
