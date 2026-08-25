@@ -491,8 +491,14 @@ def gguf_header(path: str) -> dict:
             header["width"] = int(width) if width is not None else None
             header["nextn"] = int(nextn) if nextn is not None else 0
             header["context"] = _header_int(value(f"{header['arch']}.context_length"))
+            # An MTP head is a block in the header and not a layer in the cache:
+            # llama.cpp drops it at load, so counting it would size the KV cache
+            # for a layer that never keeps one.
+            layers = header["blocks"]
+            if layers is not None:
+                layers -= header["nextn"]
             header["kv_per_token"] = _kv_per_token(
-                value, header["arch"], header["blocks"], header["width"]
+                value, header["arch"], layers, header["width"]
             )
     except Exception:
         log.debug("[minimax_h3_rewriter.gguf_header] %s unreadable", path, exc_info=True)
