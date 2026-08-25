@@ -1,0 +1,104 @@
+diff --git a/minimax_h3_rewriter/cli_engine.py b/minimax_h3_rewriter/cli_engine.py
+index ef23c07..6d172f0 100644
+--- a/minimax_h3_rewriter/cli_engine.py
++++ b/minimax_h3_rewriter/cli_engine.py
+@@ -171,6 +171,11 @@ def generate(
+     try:
+         text, stderr_text = runner.run(command, binary, report)
+     except runner.ChildFailed as error:
++        if runner.out_of_memory(str(error)):
++            raise RuntimeError(
++                f"{error}\n\nThe card ran out of room. Lower context_size, or lower "
++                f"gpu_layers in the options node to keep part of the model on the CPU."
++            ) from error
+         raise RuntimeError(str(error)) from error
+     finally:
+         try:
+diff --git a/minimax_h3_rewriter/mtmd_engine.py b/minimax_h3_rewriter/mtmd_engine.py
+index 0d15090..d234afe 100644
+--- a/minimax_h3_rewriter/mtmd_engine.py
++++ b/minimax_h3_rewriter/mtmd_engine.py
+@@ -65,6 +65,10 @@ def build_command(
+     device: str = devices.AUTO,
+ ) -> list[str]:
+     layers = devices.layers_for(device, gpu_layers)
++    # Keep asking for every layer rather than letting llama.cpp fit the run to
++    # the free VRAM itself: left to it, a big model keeps its full context and
++    # spills half the weights to the CPU, which measures 20x slower than the
++    # same model held whole with a small context. Trim context_size instead.
+     layers = ALL_LAYERS if layers < 0 else layers
+     command = [
+         binary,
+@@ -94,6 +98,30 @@ def build_command(
+     return command
+ 
+ 
++FALLBACK_CONTEXT = 8192
++
++
++def failure_hint(stderr_text: str, n_ctx: int) -> str:
++    """The advice that fits the way the child actually died."""
++    if runner.out_of_memory(stderr_text):
++        if int(n_ctx) == CONTEXT_FROM_MODEL:
++            return (
++                f"The card ran out of room. context_size is 0, which means the model's own "
++                f"context, and on a large model that KV cache alone is gigabytes on top of the "
++                f"weights. Set context_size on this node to {FALLBACK_CONTEXT} and run again; "
++                f"lower gpu_layers in the options node only if that is still not enough."
++            )
++        return (
++            f"The card ran out of room at context_size {int(n_ctx)}. Halve it, or lower "
++            f"gpu_layers in the options node to keep part of the model on the CPU."
++        )
++    return (
++        "Not every multimodal GGUF works here: llama.cpp's mtmd has to understand the "
++        "projector format, and several current models abort while loading it. Pick an entry "
++        "from the captioner list, which names the ones this pack has been run against."
++    )
++
++
+ def clip_note(count: int, seconds: float) -> str:
+     """Tell the model that these separate images are one clip, in order.
+ 
+@@ -201,12 +229,7 @@ def describe(
+         try:
+             text, stderr_text = runner.run(command, binary, report)
+         except runner.ChildFailed as error:
+-            raise RuntimeError(
+-                f"{error}\n\nNot every multimodal GGUF works here: llama.cpp's mtmd has to "
+-                f"understand the projector format, and several current models abort while "
+-                f"loading it. Pick an entry from the captioner list, which names the ones this "
+-                f"pack has been run against."
+-            ) from error
++            raise RuntimeError(f"{error}\n\n{failure_hint(str(error), n_ctx)}") from error
+ 
+     if progress is not None:
+         progress.finish(f"Done · {len(text)} chars{runner.speed(stderr_text)}")
+diff --git a/minimax_h3_rewriter/runner.py b/minimax_h3_rewriter/runner.py
+index 4798959..f52df0f 100644
+--- a/minimax_h3_rewriter/runner.py
++++ b/minimax_h3_rewriter/runner.py
+@@ -65,6 +65,23 @@ class ChildFailed(RuntimeError):
+     """The subprocess stalled, crashed, or exited non-zero."""
+ 
+ 
++#: Phrases llama.cpp prints when the card runs out of room, in any of the
++#: three places it can happen: the weights, the compute buffer, the KV cache.
++OUT_OF_MEMORY_MARKERS = (
++    "out of memory",
++    "cudamalloc failed",
++    "failed to allocate buffer for kv cache",
++    "alloc_tensor_range: failed to allocate",
++    "vk::device::allocatememory",
++)
++
++
++def out_of_memory(text: str) -> bool:
++    """True when the child died for want of VRAM rather than a bad model."""
++    lowered = (text or "").lower()
++    return any(marker in lowered for marker in OUT_OF_MEMORY_MARKERS)
++
++
+ def free_comfy_vram(device: str = "auto") -> None:
+     """Evict ComfyUI's models, unless this run is going somewhere else entirely.
+ 

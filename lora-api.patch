@@ -1,0 +1,166 @@
+diff --git a/minimax_h3_rewriter/gguf_engine.py b/minimax_h3_rewriter/gguf_engine.py
+index d68b0cb..028cd28 100644
+--- a/minimax_h3_rewriter/gguf_engine.py
++++ b/minimax_h3_rewriter/gguf_engine.py
+@@ -13,6 +13,7 @@ llama-cpp-python's chat formatter, because the reference implementation passes
+ from __future__ import annotations
+ 
+ import gc
++import inspect
+ import logging
+ import os
+ import sys
+@@ -99,6 +100,33 @@ def _free_comfy_vram(device: str = devices.AUTO) -> None:
+     runner.free_comfy_vram(device)
+ 
+ 
++#: The name this adapter is registered under in the modern adapter API.
++LORA_NAME = "minimax_h3_prompt_rewriter"
++
++#: Set on a loaded ``Llama`` when the adapter has to be named on every call.
++LORA_ATTR = "_minimax_h3_lora"
++
++
++def _lora_api(llama_cpp) -> str:
++    """Which adapter API this llama-cpp-python has: 'modern', 'legacy' or ''.
++
++    Worth checking rather than assuming, because the failure this guards against
++    is silent. 0.3.47 dropped ``lora_path`` from ``Llama.__init__`` in favour of
++    ``load_lora`` plus a per-call ``active_loras``, and the same release grew a
++    ``**kwargs`` that is declared and never read -- so ``Llama(lora_path=...)``
++    is accepted, discarded, and the rewriter runs as a plain base model with no
++    error anywhere. A ``TypeError`` guard cannot catch that; only asking what the
++    signature really accepts can.
++    """
++    if hasattr(llama_cpp.Llama, "load_lora"):
++        return "modern"
++    parameters = inspect.signature(llama_cpp.Llama.__init__).parameters
++    accepted = parameters.get("lora_path")
++    if accepted is not None and accepted.kind is not accepted.VAR_KEYWORD:
++        return "legacy"
++    return ""
++
++
+ def _interrupted() -> bool:
+     try:
+         import comfy.model_management as mm
+@@ -155,20 +183,38 @@ def load(
+             "verbose": False,
+         }
+         kwargs.update(devices.llama_cpp_kwargs(device))
+-        if adapter_path:
++
++        api = _lora_api(llama_cpp) if adapter_path else ""
++        if adapter_path and not api:
++            raise RuntimeError(
++                "This llama-cpp-python build offers no way to attach the prompt-rewriter "
++                "LoRA: 'Llama.load_lora' is missing and 'lora_path' is not a real argument "
++                "of its constructor. Set gguf_runtime to 'llama.cpp' to run the official "
++                "binary, which takes '--lora', or run the transformers backend instead."
++            )
++        if api == "legacy":
+             kwargs["lora_path"] = adapter_path
+ 
+-        try:
+-            llama = llama_cpp.Llama(**kwargs)
+-        except TypeError as error:
+-            # Older builds spell the adapter argument differently; retry without
+-            # it rather than silently dropping the rewriter.
+-            if adapter_path:
++        llama = llama_cpp.Llama(**kwargs)
++
++        if api == "modern":
++            llama.load_lora(LORA_NAME, adapter_path)
++            # Confirm the registry actually took it. ``eval`` looks the name up and,
++            # on a miss, skips the adapter with a warning printed only when verbose
++            # -- and this backend runs verbose=False. An unchecked load_lora would
++            # therefore rebuild the silence this whole change exists to remove.
++            registered = list(getattr(llama, "list_loras", list)())
++            if LORA_NAME not in registered:
+                 raise RuntimeError(
+-                    f"This llama-cpp-python build did not accept 'lora_path' ({error}). "
+-                    "Upgrade it, or run the transformers backend instead."
+-                ) from error
+-            raise
++                    f"llama-cpp-python accepted the prompt-rewriter LoRA but did not "
++                    f"register it as '{LORA_NAME}' (registry holds: {registered or 'nothing'}). "
++                    f"Set gguf_runtime to 'llama.cpp' to run the official binary instead."
++                )
++            setattr(llama, LORA_ATTR, LORA_NAME)
++            log.info(
++                "[minimax_h3_rewriter.gguf_engine.load] adapter registered as '%s' (%s loaded)",
++                LORA_NAME, getattr(llama, "loaded_lora_count", "?"),
++            )
+ 
+         _STATE.update(key=key, llama=llama)
+         if progress is not None:
+@@ -181,6 +227,7 @@ def unload() -> None:
+         llama = _STATE.get("llama")
+         _STATE.update(key=None, llama=None)
+     if llama is not None:
++        _release_loras(llama)
+         close = getattr(llama, "close", None)
+         if callable(close):
+             try:
+@@ -191,6 +238,32 @@ def unload() -> None:
+     gc.collect()
+ 
+ 
++def _release_loras(llama) -> None:
++    """Free adapters while the base model is still alive.
++
++    ``LlamaModel.close`` in 0.3.47 calls ``llama_model_free`` first and only then
++    walks its adapter registry, so ``llama_adapter_lora_free`` runs against a
++    model that is already gone -- an access violation that takes the ComfyUI
++    process's worker thread with it. The adapters hold references into the
++    model's own structures, so the order matters and it is the wrong way round.
++
++    Freeing them here, before ``close``, leaves an empty registry for that branch
++    to skip. Everything downstream is safe to run twice: ``LlamaLoraAdapter.free``
++    guards on its own pointer, so the ``_exit_stack`` callback and ``__del__``
++    both become no-ops.
++
++    Only reachable when an adapter is attached, which is why nobody met it while
++    ``lora_path`` was being silently discarded.
++    """
++    release = getattr(llama, "unload_all_loras", None)
++    if not callable(release):
++        return
++    try:
++        release()
++    except Exception:
++        log.debug("[minimax_h3_rewriter.gguf._release_loras] failed", exc_info=True)
++
++
+ def is_loaded() -> bool:
+     return _STATE["llama"] is not None
+ 
+@@ -220,6 +293,10 @@ def generate(
+         "stream": True,
+         "seed": normalize_seed(seed),
+     }
++    lora = getattr(llama, LORA_ATTR, "")
++    if lora:
++        call_kwargs["active_loras"] = [{"name": lora, "scale": 1.0}]
++
+     if greedy:
+         call_kwargs["temperature"] = 0.0
+     else:
+@@ -235,7 +312,16 @@ def generate(
+ 
+     try:
+         stream = llama(rendered, **call_kwargs)
+-    except TypeError:
++    except TypeError as error:
++        # Dropping 'seed' is a tolerable retry; dropping 'active_loras' would run
++        # the base model as if the LoRA were attached, which is the exact silence
++        # this backend was fixed to stop producing.
++        if "active_loras" in call_kwargs:
++            raise RuntimeError(
++                f"This llama-cpp-python build registered the LoRA but rejected the call "
++                f"that applies it ({error}). Set gguf_runtime to 'llama.cpp' to run the "
++                f"official binary instead."
++            ) from error
+         call_kwargs.pop("seed", None)
+         stream = llama(rendered, **call_kwargs)
+ 
