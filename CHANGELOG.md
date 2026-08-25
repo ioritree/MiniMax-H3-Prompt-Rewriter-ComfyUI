@@ -90,6 +90,143 @@ becomes a real version there.
   asset and carry on - one asset must not cost the ones already described - and
   drop its label with it, because an empty `Picture 2:` reads downstream as a
   real reference. The node's summary counts them.
+## 0.16.5 - 2026-08-24
+
+### Fixed
+
+- **A captioner no longer reserves the whole context the model was trained on.**
+  `--ctx-size 0` reads as "let llama.cpp decide" and means "the context this
+  model was trained for", and the packaged captioners hid the difference:
+  Qwen2.5-Omni asks for 32k and fits anywhere. Qwen3-VL asks for 262144 tokens,
+  and its cache is 36 layers of 8 KV heads at 128 dimensions, K and V, in f16 -
+  144 KiB a token, so 36 GiB of KV cache allocated before a single pixel has
+  been read. On a 32 GB card the run died at `failed to allocate buffer for kv
+  cache`, having never looked at the picture, and llama.cpp's own auto-fit could
+  not rescue it because the node pins `--n-gpu-layers`.
+
+  0 now means "what this run needs, and never more than the card can hold". The
+  context length and the shape of the cache are read from the GGUF header the
+  model scan already parses, and sized against the number of references and the
+  memory of the device the run is bound for. A number typed into `context_size`
+  is still honoured exactly as typed, and a header too thin to size against
+  falls back to letting llama.cpp decide, as before.
+
+  Reported by [@808charlie](https://github.com/808charlie) in
+  [#7](https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/issues/7).
+
+### Changed
+
+- **A failed caption says which way it failed.** The note about projector
+  formats was printed on every non-zero exit from `llama-mtmd-cli`, so an
+  out-of-memory came back dressed as a model mtmd cannot read - and sent the
+  reader to study the model while the child had already said `cudaMalloc
+  failed`. An allocation that did not fit and a context too small for the frames
+  now each get their own answer, naming the widget that moves them, and the
+  projector note is left for the exits that are actually about the projector.
+
+- **The captioner scan stops narrating.** A model sharing a folder with an
+  mmproj it could not be paired with printed a line naming every projector in
+  that folder, at INFO. A flat `models/LLM` holding a dozen unrelated quants and
+  five projectors therefore announced twelve models by five names each - four
+  times over, once for every node that offers a captioner dropdown, every time
+  ComfyUI asked for the node definitions. One line per folder now, at DEBUG.
+
+  Reported by [@808charlie](https://github.com/808charlie) in
+  [#7](https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/issues/7).
+
+## 0.16.4 - 2026-08-24
+
+### Changed
+
+- **An installed `llama-cpp-python` no longer looks like something that should
+  have spared a caption run its download.** It cannot: a reference asset goes
+  through `llama-mtmd-cli`, a program, and the wheel is a set of shared
+  libraries loaded by ctypes with no executables in it at all - a CUDA one
+  compiled from source included, since that build produces `libllama.so` and its
+  neighbours and no CLI targets. So a machine with a perfectly good wheel still
+  fetches the release archive to caption an image, and the only account of it
+  was 32 MB going past.
+
+  The captioner now says so before the download rather than after, in the log,
+  and again in the refusal when there is no download to be had. `gguf_runtime`
+  is a writer setting; the caption nodes have no wheel path at all.
+
+- **`llama_backend = cuda` on Linux says what a build of your own is, and what
+  is not one.** The refusal already said that upstream publishes no Linux CUDA
+  archive and that a build you compiled is run as it is. What it left out is
+  that `llama-cpp-python` is not such a build, whatever it was compiled with -
+  the reasonable next thought for anyone who has just built the wheel with
+  `-DGGML_CUDA=on` and expected the caption nodes to follow. It now names the
+  two cmake targets that produce the missing programs, and `llama_bin.txt`
+  beside `MINIMAX_H3_LLAMA_BIN` and `PATH`. On a caption run it carries the
+  search report too, and that report names `llama-mtmd-cli` rather than the
+  completion binary nobody was looking for.
+
+- **A runtime download that cannot reach GitHub prints the way to do it by
+  hand.** The asset URLs, the folder to unpack them into, and the one thing that
+  goes wrong quietly when a file manager does the unpacking: the shared
+  libraries are symlinks and have to stay symlinks. A stack of identical
+  connection errors is not advice on a machine that is deliberately offline.
+
+  Reported by [@808charlie](https://github.com/808charlie) in
+  [#7](https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/issues/7).
+
+## 0.16.3 - 2026-08-22
+
+### Changed
+
+- **A GGUF that will not load now says why.** llama-cpp-python raises one
+  message for every load failure - `Failed to load model from file:` and the
+  path - and llama.cpp's own explanation goes to the C-level stderr this backend
+  suppresses, so the commonest failure of all arrived with no reason attached:
+  a model whose architecture is newer than the llama.cpp compiled into the
+  installed wheel. Qwen3-VL needs a build from 2025-10-30 onwards and Qwen3.5
+  one from 2026-02-10, while llama-cpp-python 0.3.16 carries llama.cpp from
+  2025-08-14 - so plain Qwen3 loads there and every newer family fails
+  identically, which reads as the node being broken.
+
+  The refusal now names the architecture, read out of the file's own header, and
+  says whether this build has a loader for it, read out of the architecture
+  table compiled into the library. It has to be read that way: the C API
+  publishes neither that table nor the build it came from, and the package
+  version answers nothing either, since forks number themselves and any version
+  can be built against any llama.cpp. A stripped or packed library, where the
+  search would prove nothing, falls back to the general message rather than
+  accusing the wrong thing.
+
+  Reported by [@808charlie](https://github.com/808charlie) in
+  [#4](https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/issues/4).
+
+## 0.16.2 - 2026-08-22
+
+### Fixed
+
+- **The llama.cpp runtime unpacks on Linux and macOS.** The guard around tar
+  extraction refused every symlink outright, and the official Linux and macOS
+  archives ship their shared libraries as SONAME symlinks -
+  `libllama.so.0 -> libllama.so.0.0.10310`, ten of them in each Linux build and
+  eighteen in the macOS one - so the very first download died on
+  `refusing archive member outside the target: 'llama-b10310/libllama.so.0'`
+  and no machine outside Windows ever got a runtime at all. Windows was never
+  affected: its archives are zip, and that branch has a check of its own.
+
+  Those links are not decoration. `ldd llama-completion` resolves
+  `libllama.so.0`, `libggml.so.0` and `libggml-base.so.0` - the links
+  themselves - so keeping the files and dropping the links would have unpacked
+  a runtime the loader still refuses to start.
+
+  A link is now refused only when its target really does leave the destination,
+  which is the zip-slip risk the guard is there for. The two kinds are resolved
+  from the places `tarfile` resolves them from: a symlink's target relative to
+  the link's own directory, a hardlink's relative to the extraction root. One
+  base for both would count the link's own depth twice and wave through
+  `build/bin/x -> ../../secret`, two levels above the destination, as though it
+  were `secret` inside it. An absolute target is refused outright.
+
+  Reported and fixed by [@ViolinKaine](https://github.com/ViolinKaine) in
+  [#3](https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/pull/3),
+  against release b10310 on Linux.
+
 ## 0.16.1 - 2026-08-22
 
 ### Added

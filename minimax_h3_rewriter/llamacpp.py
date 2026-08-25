@@ -92,8 +92,14 @@ ASSETS: dict[tuple[str, str], tuple[str, ...]] = {
 UNAVAILABLE = {
     ("linux", "cuda"): (
         "upstream publishes no CUDA build of llama.cpp for Linux; the Vulkan build "
-        "runs on NVIDIA cards too, and one you compiled yourself is run as it is -- "
-        f"put its bin folder on PATH, or name it in {BIN_ENV}"
+        "runs on NVIDIA cards too, and one you compiled yourself is run as it is. "
+        "llama-cpp-python is not one of those, whatever it was compiled with: the "
+        "wheel is a set of shared libraries loaded from Python and carries no "
+        "llama-completion and no llama-mtmd-cli at all, so there is nothing in it "
+        "to name here. Build llama.cpp itself -- 'cmake -B build -DGGML_CUDA=ON' "
+        "then 'cmake --build build --target llama-completion llama-mtmd-cli' -- and "
+        f"give its bin folder to the node: write it into {BIN_FILE} in ComfyUI's "
+        f"user directory, name it in {BIN_ENV}, or put it on PATH"
     ),
     ("darwin", "cuda"): "macOS has no CUDA; the macOS build uses Metal",
     ("darwin", "vulkan"): "upstream publishes no Vulkan build for macOS",
@@ -341,10 +347,35 @@ def _safe_extract(archive: str, destination: str) -> None:
             handle.extractall(destination)
         return
 
+    def link_target_inside(member: tarfile.TarInfo) -> bool:
+        """Whether a link points somewhere the extraction is allowed to reach.
+
+        SONAME symlinks -- libllama.so.0 -> libllama.so.0.0.10310 -- ship in
+        every Linux and macOS release, and the binaries link against the link
+        rather than the file behind it, so refusing links outright refuses the
+        archive. Only a target that leaves the destination is the zip-slip risk.
+
+        The two kinds resolve from different places, and it matters. tarfile
+        writes a symlink's linkname verbatim, so it is read relative to the
+        link's own directory; a hardlink's is joined onto the extraction root
+        instead. Using one base for both counts the link's own depth twice and
+        waves through 'build/bin/x -> ../../secret', two levels above the
+        destination, as though it were 'secret' inside it.
+        """
+        if os.path.isabs(member.linkname):
+            return False
+        base = os.path.dirname(member.name) if member.issym() else ""
+        return inside(os.path.normpath(os.path.join(base, member.linkname)))
+
     with tarfile.open(archive) as handle:
         for member in handle.getmembers():
-            if member.issym() or member.islnk() or not inside(member.name):
+            if not inside(member.name):
                 raise RuntimeError(f"refusing archive member outside the target: {member.name!r}")
+            if (member.issym() or member.islnk()) and not link_target_inside(member):
+                raise RuntimeError(
+                    f"refusing archive link pointing outside the target: "
+                    f"{member.name!r} -> {member.linkname!r}"
+                )
         handle.extractall(destination)
 
     # tar releases unpack into build/bin/; leave the layout alone, find_binary
@@ -368,14 +399,25 @@ def download_size(backend: str) -> int:
     return sum(asset_sizes(assets(backend)).values())
 
 
-def _packaged(backend: str, auto_download: bool, progress=None) -> str:
-    """The pack's own runtime: the unpacked one, or a fresh download of it."""
+def _packaged(
+    backend: str, auto_download: bool, progress=None, wanted: tuple[str, ...] = BINARIES
+) -> str:
+    """The pack's own runtime: the unpacked one, or a fresh download of it.
+
+    ``wanted`` is what the caller was actually looking for, and only reaches the
+    refusal: the archive carries the whole set, so it is the same download
+    either way, but a captioner told that PATH holds no ``llama-completion``
+    reports a search nobody ran.
+    """
     backend = resolve_backend(backend)
     existing = installed(backend)
     if existing:
         return existing
 
-    names = assets(backend)
+    try:
+        names = assets(backend)
+    except RuntimeError as error:
+        raise RuntimeError(f"{error}\n\n{where_looked(backend, wanted)}") from error
     directory = install_dir(backend)
 
     if not auto_download:
@@ -383,7 +425,7 @@ def _packaged(backend: str, auto_download: bool, progress=None) -> str:
             f"The llama.cpp {backend} runtime is not in '{directory}' and auto_download is off. "
             f"Enable it, or unpack {', '.join(names)} from "
             f"https://github.com/{REPO}/releases/tag/{RELEASE} into that folder."
-            f"\n\n{where_looked(backend)}"
+            f"\n\n{where_looked(backend, wanted)}"
         )
 
     from . import download
@@ -434,7 +476,10 @@ def _packaged(backend: str, auto_download: bool, progress=None) -> str:
                     f"{download.human_size(position)} (total size unknown, no bar)"
                 )
 
-        transferred += download.download_task(task, None, transferred, report)
+        try:
+            transferred += download.download_task(task, None, transferred, report)
+        except download.DownloadError as error:
+            raise RuntimeError(f"{error}\n\n{by_hand(backend)}") from error
 
     for index, name in enumerate(names, start=1):
         if progress is not None:
@@ -465,7 +510,7 @@ def _packaged(backend: str, auto_download: bool, progress=None) -> str:
     return binary
 
 
-def where_looked(backend: str) -> str:
+def where_looked(backend: str, names: tuple[str, ...] = BINARIES) -> str:
     """The places that were searched and what each held, as a block of text.
 
     "Put it on PATH" is useless advice to someone who did exactly that in a
@@ -486,7 +531,7 @@ def where_looked(backend: str) -> str:
         f"  {written}: " + ("read" if os.path.isfile(written) else "no such file"),
         f"  unpacked runtime: {directory}"
         + ("" if os.path.isdir(directory) else " (not there)"),
-        f"  PATH: {len(entries)} entries, none holding {' or '.join(BINARIES)}",
+        f"  PATH: {len(entries)} entries, none holding {' or '.join(names)}",
         f"    {shown}",
     ]
     if not named:
@@ -503,6 +548,32 @@ def where_looked(backend: str) -> str:
         f"The way that needs no environment at all: write the path to your build "
         f"into {written}, or put the build itself in {directory}."
     )
+    return "\n".join(lines)
+
+
+def by_hand(backend: str) -> str:
+    """Installing the runtime without a connection, in full.
+
+    A machine that is offline stays offline, and a stack of identical connection
+    errors is not advice. The archive is public, small and needed only once, so
+    the way through is the way the weights came: fetch it somewhere else and
+    unpack it where this looked.
+    """
+    backend = resolve_backend(backend)
+    names = ASSETS.get((sys.platform, backend), ())
+    lines = [
+        "This runtime can also be installed by hand, which is the way through on a "
+        "machine with no connection. Fetch these on one that has:",
+        *[f"  {DOWNLOAD_URL}/{name}" for name in names],
+        "and unpack them into:",
+        f"  {install_dir(backend)}",
+        "That folder name is where the node looks, so nothing else is needed, and "
+        "the layout inside the archive does not matter -- the binaries are found at "
+        "any depth.",
+    ]
+    if sys.platform != "win32":
+        lines.append("Unpack with 'tar -xf', not a file manager: the archive ships its "
+                     "shared libraries as symlinks and they have to stay symlinks.")
     return "\n".join(lines)
 
 
@@ -539,14 +610,30 @@ def ensure(backend: str, auto_download: bool, progress=None) -> str:
     if on_path:
         return _announce(on_path, "found on PATH")
 
-    try:
-        assets(backend)
-    except RuntimeError as error:
-        raise RuntimeError(
-            f"{error}\n\n{where_looked(backend)}"
-        ) from error
-
     return _packaged(backend, auto_download, progress)
+
+
+def wheel_cannot_caption() -> str:
+    """Why an installed ``llama-cpp-python`` spares a caption run nothing.
+
+    "But I already have llama-cpp-python" is the reasonable thought of anyone
+    watching a captioner fetch 32 MB of binaries, and it deserves an answer
+    before the download rather than after it fails. A reference asset goes
+    through ``llama-mtmd-cli``, a program; the wheel is shared libraries loaded
+    by ctypes and ships no executables at all, a CUDA build compiled from source
+    included. Empty when there is no wheel, so a caller can print it blindly.
+    """
+    from . import gguf_engine
+
+    if not gguf_engine.available():
+        return ""
+    return (
+        "llama-cpp-python is installed here and cannot do this job: a reference asset "
+        f"goes through {MTMD_BINARIES[0]}, a program, and the wheel is a set of shared "
+        "libraries with no executables in it -- however it was compiled. It runs the "
+        "writer nodes; the caption nodes need an llama.cpp build, which is what this is "
+        "for."
+    )
 
 
 def ensure_mtmd(backend: str, auto_download: bool, progress=None) -> str:
@@ -581,7 +668,13 @@ def ensure_mtmd(backend: str, auto_download: bool, progress=None) -> str:
     if on_path:
         return _announce(on_path, "found on PATH")
 
-    _packaged(backend, auto_download, progress)
+    note = wheel_cannot_caption()
+    if note:
+        log.info("[minimax_h3_rewriter.llamacpp] %s", note)
+    try:
+        _packaged(backend, auto_download, progress, MTMD_BINARIES)
+    except RuntimeError as error:
+        raise RuntimeError(f"{error}\n\n{note}".rstrip()) from error
     binary = find_binary(directory, MTMD_BINARIES)
     if not binary:
         raise RuntimeError(

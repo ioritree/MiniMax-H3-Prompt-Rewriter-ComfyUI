@@ -6,6 +6,16 @@
 
 [English version](README.md) · [История изменений](CHANGELOG_RU.md)
 
+<p align="center">
+  <a href="https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI?display_name=tag"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI"></a>
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
+  <a href="https://registry.comfy.org/publishers/darkil/nodes/minimax-h3-prompt-rewriter"><img alt="ComfyUI Registry" src="https://img.shields.io/badge/ComfyUI-Registry-1B98E0"></a>
+  <a href="https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA"><img alt="Hugging Face" src="https://img.shields.io/badge/Hugging%20Face-LoRA-FFD21E?logo=huggingface&logoColor=black"></a>
+  <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-GGUF"><img alt="GGUF adapter, 27B" src="https://img.shields.io/badge/GGUF-27B-FFD21E?logo=huggingface&logoColor=black"></a>
+  <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-8B-GGUF"><img alt="GGUF adapter, 8B" src="https://img.shields.io/badge/GGUF-8B-FFD21E?logo=huggingface&logoColor=black"></a>
+</p>
+
 ![Нода ререйтера в ComfyUI: короткий промпт слева, справа — структурированное покадровое описание, звуковой ландшафт и музыка](docs/node_preview.png)
 
 Промпт можно писать на любом языке, который понимает базовая модель, — результат
@@ -597,7 +607,11 @@ Ref2VA и сам блок референсов. Задача, которая к�
 Замерено на Qwen2.5-Omni-3B в 3.4 ГБ: **3 с на кадр, 2 с на аудиоклип, 5 с на
 видео.** Работает через те же бинарники llama.cpp, что и всё остальное:
 `llama-mtmd-cli` лежит в том же архиве, который ререйтер уже скачивает, — так что
-машина, где хоть раз выполнялся ререйт, не качает никакого рантайма.
+машина, где хоть раз выполнялся ререйт, не качает никакого рантайма. Установленный
+`llama-cpp-python` от этого не избавляет: мультимодальный вход идёт через
+`llama-mtmd-cli`, отдельную программу, а колесо — это набор разделяемых библиотек,
+исполняемых файлов в нём нет вовсе. Поэтому `gguf_runtime` — настройка нод-райтеров:
+капшенеры работают через бинарники, что бы там ни стояло.
 
 **Соединяются в цепочку** проводом из `reference_assets` во вход `previous`
 следующей ноды. Каждая метка нумеруется **внутри своей категории** — это
@@ -636,10 +650,14 @@ delivery, speaking in Russian».*
   Все сразу переполнили бы и контекст, и терпение: две секунды при 25 fps — это
   56 картинок через визуальную башню, а тридцать секунд — 750. Именно это и
   делает стоимость описания клипа не зависящей от его длины.
-- `context_size` — `0` означает «контекст самой модели», под который её проектор
-  и рассчитан: один кадр 1024×1024 — это уже больше двадцати медиа-чанков.
-  Уменьшайте только чтобы срезать KV-кэш, и учтите, что слишком малое значение
-  роняет запуск, а не обрезает его.
+- `context_size` — `0` подбирает контекст под референсы и под карту, а это не то
+  же самое, что «контекст самой модели»: llama.cpp резервирует весь KV-кэш до
+  того, как прочтёт первый пиксель, и модель, обученная на 262144 токена,
+  требует под него десятки гигабайт — Qwen3-VL-8B ровно 36 ГБ, на карте, которая
+  описала бы картинку за три секунды. Один кадр 1024×1024 — это уже больше двадцати
+  медиа-чанков, поэтому число референсов — половина ответа, а память устройства —
+  вторая. Вписанное число выполняется буквально; слишком малое роняет запуск,
+  а не обрезает его.
 
 > **Не всякий мультимодальный GGUF здесь работает**, и те, что не работают,
 > падают громко. `mtmd` в llama.cpp должен понимать формат проектора: у Gemma 4
@@ -1260,7 +1278,9 @@ NVIDIA, CUDA даёт около **50 ток/с** с адаптером прот
 > это [ноды писателя](#minimax-h3-prompt-writer-t2vai2vafl2val2va) делают
 > намеренно, только с полным руководством в промте вместо семи строк.
 
-На пути GGUF используется **конвертированный** адаптер, а не PEFT-версия. Он
+На пути GGUF используется **конвертированный** адаптер, а не PEFT-версия: F16 и
+Q8_0 [для 27B](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-GGUF) и
+[для 8B](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-8B-GGUF). Он
 скачивается сам; чтобы взять свой, положите `.gguf` в `models/LLM` и выберите его
 в списке `adapter` ноды настроек либо пропишите `adapters.gguf.repo` в файле
 списка моделей. Промпт собирается по чат-шаблону из

@@ -6,6 +6,16 @@ for [MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) comes out — enti
 
 [Русская версия](README_RU.md) · [Changelog](CHANGELOG.md)
 
+<p align="center">
+  <a href="https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI?display_name=tag"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI"></a>
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
+  <a href="https://registry.comfy.org/publishers/darkil/nodes/minimax-h3-prompt-rewriter"><img alt="ComfyUI Registry" src="https://img.shields.io/badge/ComfyUI-Registry-1B98E0"></a>
+  <a href="https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA"><img alt="Hugging Face" src="https://img.shields.io/badge/Hugging%20Face-LoRA-FFD21E?logo=huggingface&logoColor=black"></a>
+  <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-GGUF"><img alt="GGUF adapter, 27B" src="https://img.shields.io/badge/GGUF-27B-FFD21E?logo=huggingface&logoColor=black"></a>
+  <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-8B-GGUF"><img alt="GGUF adapter, 8B" src="https://img.shields.io/badge/GGUF-8B-FFD21E?logo=huggingface&logoColor=black"></a>
+</p>
+
 ![The rewriter node in ComfyUI: a short prompt on the left, the structured shot-by-shot description, soundscape and music fields on the right](docs/node_preview.png)
 
 The prompt may be in any language the base model reads; the rewrite comes back in
@@ -606,7 +616,11 @@ describes it into one labelled line of `reference_assets`.
 Measured on a 3.4 GB Qwen2.5-Omni-3B: **3 s for a frame, 2 s for an audio clip,
 5 s for a video.** It runs through the same llama.cpp binaries as everything else
 — `llama-mtmd-cli` ships in the archive the rewriter already fetches, so a
-machine that has run one rewrite downloads no runtime at all.
+machine that has run one rewrite downloads no runtime at all. An installed
+`llama-cpp-python` does not spare it: multimodal input goes through
+`llama-mtmd-cli`, a program, and the wheel is a set of shared libraries with no
+executables in it. `gguf_runtime` is therefore a writer setting — the caption
+nodes run the binaries whatever it says.
 
 **Chain them by wiring** `reference_assets` into the next node's `previous`. Each
 label is numbered *within its own category*, which is the guide's own rule
@@ -646,10 +660,14 @@ Other inputs:
   two seconds at 25 fps is 56 images through the vision tower, and thirty seconds
   is 750. This is what makes the cost of describing a clip independent of its
   length.
-- `context_size` — `0` means the model's own, which is what its projector was
-  sized against; one 1024×1024 frame is already twenty-odd media chunks. Lower it
-  only to cut the KV cache, and know that too small a value fails the run instead
-  of truncating it.
+- `context_size` — `0` sizes the context from the references and from the card,
+  which is not the same as the model's own: llama.cpp reserves the whole KV cache
+  before it reads a pixel, and a model trained for 262144 tokens asks tens of
+  gigabytes for it — Qwen3-VL-8B asks 36 GB, on a card that would have captioned
+  the picture in three seconds. One 1024×1024 frame is already twenty-odd media
+  chunks, so the count of references is half of the answer and the memory of the
+  device is the other half. Type a number to say it yourself; too small a value
+  fails the run instead of truncating it.
 
 > **Not every multimodal GGUF works here**, and the ones that do not fail loudly.
 > llama.cpp's `mtmd` has to understand the projector format: Gemma 4's aborts the
@@ -1271,7 +1289,9 @@ the CUDA figure.
 > [writer nodes](#minimax-h3-prompt-writer-t2vai2vafl2val2va) do on purpose, with
 > the full guide in the prompt instead of seven lines.
 
-The GGUF route uses a **converted** adapter, not the PEFT one. It is fetched
+The GGUF route uses a **converted** adapter, not the PEFT one — F16 and Q8_0 of
+[the 27B LoRA](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-GGUF) and of
+[the 8B one](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-8B-GGUF). It is fetched
 without asking; to use one of your own, drop the `.gguf` into `models/LLM` and
 pick it from the options node's `adapter` list, or set `adapters.gguf.repo` in
 the model list. The prompt is built from the GGUF's own chat template with
