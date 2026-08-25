@@ -6,3 +6,6 @@
 *.jpg binary
 *.gif binary
 *.ico binary
+
+# local: keep the patch records byte-exact, LF included, or "git apply" fails
+*.patch -text
