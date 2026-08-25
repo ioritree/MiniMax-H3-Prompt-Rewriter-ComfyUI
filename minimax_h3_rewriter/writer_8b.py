@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from . import catalog, discovery, engine, media, mtmd_engine
 from .catalog import FORMAT_GGUF, FORMAT_TRANSFORMERS
 from .constants import (
+    DEFAULT_OUTPUT_LANGUAGE,
     DURATION_MAX,
     DURATION_MIN,
     OUTPUT_FIELDS,
@@ -45,12 +46,14 @@ from .nodes import (
     CATEGORY,
     DEFAULT_OPTIONS,
     LOCAL_PREFIX,
+    LORA_LANGUAGE_TOOLTIP,
     OPTIONS_TYPE,
     _announce,
     _bypassed,
     _ensure_pair,
     _ensure_present,
     _gguf_text,
+    _language_widget,
     _refuse_problem,
     _resolve_adapter,
     _verify_base_model,
@@ -247,6 +250,7 @@ def _with_transformers(
     greedy: bool,
     keep_loaded: bool,
     progress: NodeProgress,
+    language: str = DEFAULT_OUTPUT_LANGUAGE,
 ) -> str:
     """The safetensors route: one process, the pictures handed over in memory.
 
@@ -286,7 +290,7 @@ def _with_transformers(
         progress=progress,
         trust_remote_code=bool(settings.get("trust_remote_code", False)),
         images=images or None,
-        messages=build_messages(prompt, task, resolution, duration),
+        messages=build_messages(prompt, task, resolution, duration, language),
         seed=int(seed),
         greedy=greedy,
         max_new_tokens=int(settings["max_new_tokens"]),
@@ -348,6 +352,7 @@ def rewrite_8b(
     progress: NodeProgress,
     first_frame=None,
     last_frame=None,
+    language: str = DEFAULT_OUTPUT_LANGUAGE,
 ) -> str:
     """Run the 8B adapter and return the rewrite, on whichever of the three engines fits.
 
@@ -362,7 +367,7 @@ def rewrite_8b(
     if choice.fmt == FORMAT_TRANSFORMERS:
         return _with_transformers(
             choice, frames, prompt, wanted, resolution, int(duration),
-            quantization, settings, seed, greedy, keep_loaded, progress,
+            quantization, settings, seed, greedy, keep_loaded, progress, language,
         )
 
     if choice.local:
@@ -388,7 +393,9 @@ def rewrite_8b(
             catalog.ADAPTERS_8B,
         )
 
-    system, user = render(build_messages(prompt, wanted, resolution, int(duration)))
+    system, user = render(
+        build_messages(prompt, wanted, resolution, int(duration), language)
+    )
 
     if frames:
         return _with_frames(
@@ -529,6 +536,7 @@ class MiniMaxH3PromptWriter8B:
                 "last_frame": ("IMAGE", {"tooltip": FRAME_TOOLTIPS["last_frame"]}),
                 "options": (OPTIONS_TYPE,),
                 "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_TOOLTIP}),
+                "output_language": _language_widget(LORA_LANGUAGE_TOOLTIP),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -553,6 +561,7 @@ class MiniMaxH3PromptWriter8B:
         last_frame=None,
         options=None,
         bypass=False,
+        output_language=DEFAULT_OUTPUT_LANGUAGE,
         unique_id=None,
     ):
         if bypass:
@@ -569,7 +578,7 @@ class MiniMaxH3PromptWriter8B:
         text = rewrite_8b(
             model, prompt, task, resolution, duration, quantization,
             greedy, seed, keep_model_loaded, settings, progress,
-            first_frame, last_frame,
+            first_frame, last_frame, output_language,
         )
 
         fields = split_fields(text)

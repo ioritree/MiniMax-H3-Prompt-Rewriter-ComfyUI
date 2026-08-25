@@ -9,9 +9,30 @@ character for character -- MiniMax-H3 itself reads it.
 ``build_messages`` returns a user turn whose content is a list, with the
 reference frames interleaved between pieces of text. ``writer_8b.render`` is
 what turns that into something llama.cpp can be handed.
+
+The one thing that reaches past the byte-identical rule is the output language,
+handled exactly as ``prompt_template.py`` handles it for the 27B: the trained
+text is left alone and the directive is appended after it, only when a
+non-English language is asked for. ``English`` sends the upstream prompt
+character for character, as before.
+
+This adapter pulls towards English harder than the guided-writer nodes do --
+English is in the weights, not merely in a prompt that can be rewritten -- so a
+non-English choice here is an instruction the LoRA never saw in training and it
+holds less firmly. The dialogue tag gets its own bullet because this prompt, unlike
+the 27B's, shows the model a literal ``<d>[English] ...</d>`` exemplar: left
+alone, a spoken line in another language keeps an ``[English]`` tag and H3
+pronounces it as English.
 """
 
 from __future__ import annotations
+
+from .constants import (
+    DEFAULT_OUTPUT_LANGUAGE,
+    ENGLISH_OUTPUT_LANGUAGE,
+    language_name,
+    language_tag,
+)
 
 
 TASK_ALIASES = {
@@ -118,11 +139,37 @@ def format_request(prompt: str, task: str, resolution: str, duration: int) -> st
     )
 
 
+def system_prompt(language: str = DEFAULT_OUTPUT_LANGUAGE) -> str:
+    """The trained system prompt, plus the language bullets when one is asked for."""
+
+    if language == ENGLISH_OUTPUT_LANGUAGE:
+        return SYSTEM_PROMPT
+    name = language_name(language)
+    tag = language_tag(language)
+    return (
+        f"{SYSTEM_PROMPT}\n"
+        f"- Write all prose in {name}, not English. This overrides every instruction above "
+        f"that asks for English prose, including \"Write the descriptive sections in "
+        f"English\", \"one continuous English paragraph\" and \"1–3 English sentences\". It "
+        f"applies to integrated_multimodal_description, overall_soundscape and "
+        f"non_diegetic_music alike.\n"
+        f"- Structure is not prose and is never translated. Keep in English exactly as "
+        f"specified above: the three field names and their colons, [Shot N] markers, "
+        f"timestamps such as 00:03.500, the tags <d>, <scenetrans> and <cutoff>, speaker IDs "
+        f"such as (S1), and the alignment first line. Use ASCII colons and brackets, never "
+        f"full-width ones.\n"
+        f"- Dialogue, lyrics and on-screen text keep the user's original wording and "
+        f"punctuation verbatim. Set the <d> language tag to the language actually spoken, so "
+        f"a spoken {name} line is written <d>[{tag}] ...</d> rather than <d>[English] ...</d>."
+    )
+
+
 def build_messages(
     prompt: str,
     task: str = "t2av",
     resolution: str = "16:9",
     duration: int = 10,
+    language: str = DEFAULT_OUTPUT_LANGUAGE,
 ) -> list[dict]:
     """Build the system and task-aware user messages expected by the LoRA."""
 
@@ -153,7 +200,7 @@ def build_messages(
         ]
 
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt(language)},
         {"role": "user", "content": user_content},
     ]
 

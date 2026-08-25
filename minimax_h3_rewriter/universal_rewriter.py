@@ -42,9 +42,11 @@ from comfy_api.latest import io
 
 from . import writer_8b
 from .constants import (
+    DEFAULT_OUTPUT_LANGUAGE,
     DURATION_MAX,
     DURATION_MIN,
     OUTPUT_FIELDS,
+    OUTPUT_LANGUAGE_NAMES,
     QUANTIZATIONS,
     RESOLUTIONS,
 )
@@ -55,6 +57,7 @@ from .nodes import (
     BYPASS_TOOLTIP,
     CATEGORY,
     DEFAULT_OPTIONS,
+    LORA_LANGUAGE_TOOLTIP,
     OPTIONS_TYPE,
     model_choices,
     rewrite_t2va,
@@ -269,6 +272,13 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
                     optional=True,
                     tooltip=BYPASS_TOOLTIP,
                 ),
+                io.Combo.Input(
+                    "output_language",
+                    options=list(OUTPUT_LANGUAGE_NAMES),
+                    default=DEFAULT_OUTPUT_LANGUAGE,
+                    optional=True,
+                    tooltip=LORA_LANGUAGE_TOOLTIP,
+                ),
             ],
             outputs=[
                 io.String.Output(display_name="rewritten_prompt"),
@@ -297,6 +307,7 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
         frame_switches="{}",
         options=None,
         bypass=False,
+        output_language=DEFAULT_OUTPUT_LANGUAGE,
     ) -> io.NodeOutput:
         progress = NodeProgress(cls.hidden.unique_id)
         empty = ("",) * len(OUTPUT_FIELDS)
@@ -319,6 +330,7 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
                 model_8b, prompt, task, resolution, duration, quantization_8b,
                 greedy, seed, keep_model_loaded, settings, progress,
                 frames.get("first_frame"), frames.get("last_frame"),
+                output_language,
             )
         else:
             if task != TEXT_TASK or frames:
@@ -340,6 +352,7 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
             text = rewrite_t2va(
                 model_27b, prompt, resolution, duration, quantization_27b,
                 greedy, seed, keep_model_loaded, settings, progress,
+                output_language,
             )
 
         fields = split_fields(text)

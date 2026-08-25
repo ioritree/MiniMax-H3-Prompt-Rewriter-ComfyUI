@@ -35,7 +35,13 @@ from dataclasses import dataclass
 from comfy_api.latest import io
 
 from . import clip_caption, guide_prompt, media, mtmd_engine
-from .constants import OUTPUT_FIELDS, REF_OUTPUT_FIELDS, RESOLUTIONS
+from .constants import (
+    DEFAULT_OUTPUT_LANGUAGE,
+    OUTPUT_FIELDS,
+    OUTPUT_LANGUAGE_NAMES,
+    REF_OUTPUT_FIELDS,
+    RESOLUTIONS,
+)
 from .fields import split_sections
 from .nodes import (
     BYPASS_TOOLTIP,
@@ -44,6 +50,7 @@ from .nodes import (
     CATEGORY,
     DEFAULT_OPTIONS,
     OPTIONS_TYPE,
+    OUTPUT_LANGUAGE_TOOLTIP,
     _ensure_pair,
     _guided_text,
     _report,
@@ -435,6 +442,13 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
                     optional=True,
                     tooltip=BYPASS_TOOLTIP,
                 ),
+                io.Combo.Input(
+                    "output_language",
+                    options=list(OUTPUT_LANGUAGE_NAMES),
+                    default=DEFAULT_OUTPUT_LANGUAGE,
+                    optional=True,
+                    tooltip=OUTPUT_LANGUAGE_TOOLTIP,
+                ),
             ],
             outputs=[
                 io.String.Output(display_name="rewritten_prompt"),
@@ -466,6 +480,7 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
         max_frames=media.DEFAULT_MAX_FRAMES,
         context_size=mtmd_engine.CONTEXT_FROM_MODEL,
         bypass=False,
+        output_language=DEFAULT_OUTPUT_LANGUAGE,
     ) -> io.NodeOutput:
         progress = NodeProgress(cls.hidden.unique_id)
         block = (previous or "").strip()
@@ -587,7 +602,7 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
         material = "" if task == TEXT_TASK else block
         text = _guided_text(
             task, writer_model, prompt, resolution, duration, material,
-            greedy, seed, keep_model_loaded, settings, progress,
+            greedy, seed, keep_model_loaded, settings, progress, output_language,
         )
 
         names = guide_prompt.FIELDS_FOR_MODE[task]
