@@ -26,7 +26,7 @@ import logging
 import os
 import tempfile
 
-from . import chat_template, devices, llamacpp, runner
+from . import chat_template, devices, discovery, llamacpp, runner
 from .constants import normalize_seed
 from .progress import NodeProgress
 
@@ -92,6 +92,8 @@ def build_command(
     device: str = devices.AUTO,
     threads: int = -1,
     poll: int = -1,
+    cache_type: str = "default",
+    flash_attn: str = "default",
 ) -> list[str]:
     layers = devices.layers_for(device, gpu_layers)
     layers = ALL_LAYERS if layers < 0 else layers
@@ -117,6 +119,7 @@ def build_command(
     # the work, expensive when every layer is on the card and the threadpool is
     # only waiting for it.
     command += devices.cpu_arguments(threads, poll)
+    command += devices.memory_arguments(cache_type, flash_attn)
     if adapter_path:
         command += ["--lora", adapter_path]
     if greedy:
@@ -147,6 +150,8 @@ def generate(
     device: str = devices.AUTO,
     threads: int = -1,
     poll: int = -1,
+    cache_type: str = "default",
+    flash_attn: str = "default",
     progress: NodeProgress | None = None,
 ) -> str:
     device = devices.validate(device)
@@ -159,7 +164,7 @@ def generate(
     command = build_command(
         binary, model_path, adapter_path, prompt_file, gpu_layers, n_ctx, seed,
         greedy, max_new_tokens, temperature, top_p, top_k, repetition_penalty, device,
-        threads, poll,
+        threads, poll, cache_type, flash_attn,
     )
 
     runner.free_comfy_vram(device)
@@ -184,9 +189,15 @@ def generate(
         text, stderr_text = runner.run(command, binary, report)
     except runner.ChildFailed as error:
         if runner.out_of_memory(str(error)):
+            # Which of the two overflowed is worth measuring rather than listing:
+            # the weights and the KV cache differ by an order of magnitude here,
+            # and the widget that fixes one does nothing for the other.
+            measured = discovery.vram_note(model_path, n_ctx, device)
             raise RuntimeError(
-                f"{error}\n\nThe card ran out of room. Lower context_size, or lower "
-                f"gpu_layers in the options node to keep part of the model on the CPU."
+                f"{error}\n\n" + (measured or (
+                    "The card ran out of room. Lower context_size, or lower gpu_layers in "
+                    "the options node to keep part of the model on the CPU."
+                ))
             ) from error
         raise RuntimeError(str(error)) from error
     finally:

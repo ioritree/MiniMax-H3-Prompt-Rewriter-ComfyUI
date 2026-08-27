@@ -136,21 +136,40 @@ def fit_context(
     return wanted
 
 
-def _failure_hint(message: str, n_ctx: int) -> str:
+def _failure_hint(
+    message: str,
+    n_ctx: int,
+    model_path: str = "",
+    mmproj_path: str = "",
+    device: str = "",
+) -> str:
     """What to try next, told apart by what the child actually said.
 
     The projector note below used to be printed on every non-zero exit, which is
     how a plain out-of-memory came back dressed as a model llama.cpp cannot
     read. llama.cpp is specific about that one; so is this.
+
+    And an allocation failure is itself two failures. The note here used to name
+    'context_size' for both, which is right when the cache overflowed and a dead
+    end when the weights did: no context frees the several GiB by which a 27B
+    outgrows a 12 GB card. ``discovery.vram_note`` does that arithmetic off this
+    run's own files and says which one happened; the text below stays as the
+    answer for when the numbers cannot be read.
     """
     lowered = message.lower()
     if any(marker in lowered for marker in OUT_OF_MEMORY):
+        measured = discovery.vram_note(model_path, n_ctx, device, mmproj_path)
+        if measured:
+            return measured
         size = f"{n_ctx} tokens" if n_ctx else "the model's own, which can be 256k"
         return (
             f"That is the card running out of room, not a model this cannot read: the "
             f"context asked for was {size}, and llama.cpp reserves the whole KV cache "
             f"before it looks at anything. Lower 'context_size' on the node -- 8192 holds a "
-            f"picture or two -- or send the run to another card with 'device'."
+            f"picture or two -- or lower 'gpu_layers', which is -1 by default and means every "
+            f"layer on the card: a model bigger than the card needs part of itself on the "
+            f"CPU, and no context size substitutes for that. Or send the run to another card "
+            f"with 'device'."
         )
     if any(marker in lowered for marker in CONTEXT_EXCEEDED):
         size = f"{n_ctx} tokens" if n_ctx else "the model's own"
@@ -186,6 +205,8 @@ def build_command(
     system_prompt: str = "",
     threads: int = -1,
     poll: int = -1,
+    cache_type: str = "default",
+    flash_attn: str = "default",
 ) -> list[str]:
     layers = devices.layers_for(device, gpu_layers)
     # Keep asking for every layer rather than letting llama.cpp fit the run to
@@ -203,6 +224,7 @@ def build_command(
         "--predict", str(int(max_new_tokens)),
         "--seed", str(normalize_seed(seed)),
         *devices.cpu_arguments(threads, poll),
+        *devices.memory_arguments(cache_type, flash_attn),
     ]
     if adapter_path:
         command += ["--lora", adapter_path]
@@ -298,6 +320,8 @@ def describe(
     system_prompt: str = "",
     threads: int = -1,
     poll: int = -1,
+    cache_type: str = "default",
+    flash_attn: str = "default",
     progress: NodeProgress | None = None,
 ) -> str:
     """Fetch the runtime if needed, describe the attachments once, and return the text.
@@ -342,7 +366,7 @@ def describe(
         command = build_command(
             binary, model_path, mmproj_path, instruction, attachments,
             gpu_layers, n_ctx, seed, greedy, max_new_tokens, temperature, top_p, top_k, device,
-            adapter_path, system_prompt, threads, poll,
+            adapter_path, system_prompt, threads, poll, cache_type, flash_attn,
         )
 
         runner.free_comfy_vram(device)
@@ -365,7 +389,10 @@ def describe(
         try:
             text, stderr_text = runner.run(command, binary, report)
         except runner.ChildFailed as error:
-            raise RuntimeError(f"{error}\n\n{_failure_hint(str(error), n_ctx)}") from error
+            raise RuntimeError(
+                f"{error}\n\n"
+                f"{_failure_hint(str(error), n_ctx, model_path, mmproj_path, device)}"
+            ) from error
 
     text = answer_only(text.replace("\r\n", "\n"))
 

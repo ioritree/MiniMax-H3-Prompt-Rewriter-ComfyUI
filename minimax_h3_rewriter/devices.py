@@ -188,6 +188,37 @@ def llama_arguments(spec: str) -> list[str]:
     return ["--device", f"CUDA{ordinal}"] if ordinal is not None else []
 
 
+#: KV cache types llama.cpp will accept, plus the entry that passes nothing.
+#: "default" first so the widget opens on the behaviour every earlier version had.
+KV_CACHE_TYPES = ("default", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "f16", "f32")
+
+#: The three states of -fa, "default" being "do not pass the flag" rather than
+#: llama.cpp's own "auto" -- they behave the same today and this one keeps saying
+#: so if that changes.
+FLASH_ATTENTION = ("default", "on", "off")
+
+
+def memory_arguments(cache_type: str = "default", flash_attn: str = "default") -> list[str]:
+    """``-ctk``/``-ctv`` and ``-fa``, or nothing at all.
+
+    Both are for the run that does not quite fit. The KV cache is charged per
+    token per layer, so at q8_0 it is half the bytes for a quality difference
+    that does not show up in a rewrite; flash attention shrinks the compute
+    buffer beside it. Neither touches the weights, which is the point -- on a
+    card doing partial offload the freed VRAM becomes another layer or two that
+    does not have to run on the CPU.
+
+    "default" passes nothing, so a run that leaves these alone sends the command
+    line it always sent.
+    """
+    arguments: list[str] = []
+    if cache_type and cache_type != "default":
+        arguments += ["--cache-type-k", cache_type, "--cache-type-v", cache_type]
+    if flash_attn and flash_attn != "default":
+        arguments += ["--flash-attn", flash_attn]
+    return arguments
+
+
 def cpu_arguments(threads: int = -1, poll: int = -1) -> list[str]:
     """``--threads`` and ``--poll``, or nothing at all.
 

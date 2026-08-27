@@ -20,6 +20,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 
+from . import devices
 from .constants import install_command
 
 log = logging.getLogger(__name__)
@@ -486,6 +487,90 @@ def _kv_per_token(value, arch: str, blocks: int | None, width: int | None) -> in
     if not key_length or not value_length:
         return None
     return blocks * kv_heads * (key_length + value_length) * KV_ELEMENT_BYTES
+
+
+#: What llama.cpp needs on the card besides the weights and the KV cache: its
+#: CUDA context, the compute buffers, and whatever the desktop is already
+#: holding. The same figure ``fit_context`` sizes against.
+VRAM_HEADROOM = 2 * 1024 ** 3
+
+_GiB = float(1024 ** 3)
+
+
+def _file_size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def vram_note(model_path: str, n_ctx: int, device: str = "", extra_path: str = "") -> str:
+    """Which of the two things overflowed, in the numbers of this actual run.
+
+    An allocation failure has two quite different causes and one message has
+    been covering both. Either the KV cache asked for too much -- which lowering
+    ``context_size`` fixes -- or the weights are simply bigger than the card,
+    which no context can fix, because the cache is a rounding error beside them:
+    a 27B at Q4 is 15.4 GiB of weights against 0.25 GiB of KV at 1024 tokens.
+    Told to lower the context, somebody with the second problem lowers it to
+    nothing and watches it fail identically.
+
+    So the arithmetic is done and shown rather than described. Returns "" when
+    any of it cannot be read -- this runs inside a failure handler, and a hint
+    that raises would replace a real error with its own.
+    """
+    try:
+        card = devices.vram_bytes(device or devices.AUTO)
+        weights = _file_size(model_path) + _file_size(extra_path)
+        header = gguf_header(model_path)
+        per_token = header.get("kv_per_token") or 0
+        blocks = header.get("blocks") or 0
+        layers = max(blocks - (header.get("nextn") or 0), 1)
+        if not card or not weights:
+            return ""
+
+        room = card - VRAM_HEADROOM
+        kv = per_token * int(n_ctx) if (per_token and n_ctx) else 0
+        card_g, weights_g = card / _GiB, weights / _GiB
+
+        if weights <= room:
+            if not kv:
+                return ""
+            return (
+                f"The weights fit ({weights_g:.1f} GiB against a {card_g:.1f} GiB card); the "
+                f"KV cache is what did not. At {int(n_ctx)} tokens it is {kv / _GiB:.1f} GiB, "
+                f"and llama.cpp reserves all of it before it reads anything. Lower "
+                f"'context_size' -- this model costs {per_token / 1024:.0f} KiB a token, so "
+                f"halving the context halves that figure."
+            )
+
+        short = (weights - room) / _GiB
+        per_layer = weights / layers / _GiB
+        fits = int(max(room - kv, 0) / (weights / layers)) if weights else 0
+        note = (
+            f"The weights alone are bigger than the card: {weights_g:.1f} GiB against "
+            f"{card_g:.1f} GiB, about {short:.1f} GiB too much once llama.cpp's own buffers "
+            f"are counted.\n\n"
+            f"'context_size' cannot fix this one. The KV cache here is "
+            f"{per_token / 1024:.0f} KiB a token"
+        )
+        if kv:
+            note += f", so the {int(n_ctx)} you asked for is {kv / _GiB:.2f} GiB"
+        note += (
+            f" -- taking it to zero would not free {short:.1f} GiB. That is why lowering it "
+            f"changes nothing here.\n\n"
+            f"Lower 'gpu_layers' instead: it is -1 by default, which means every layer on the "
+            f"card. This model is {layers} layers at about {per_layer:.2f} GiB each, so "
+            f"roughly {fits} of them fit and the rest would run on the CPU. That is much "
+            f"slower -- the CPU layers dominate -- so the faster answer is usually a smaller "
+            f"quantisation that fits whole, or one of the 8B/Omni nodes, which are built for "
+            f"cards this size."
+        )
+        return note
+    except Exception:
+        log.debug("[minimax_h3_rewriter.discovery.vram_note] could not size the failure",
+                  exc_info=True)
+        return ""
 
 
 def gguf_header(path: str) -> dict:

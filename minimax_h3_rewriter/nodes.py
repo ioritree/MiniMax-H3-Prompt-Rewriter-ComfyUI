@@ -77,6 +77,8 @@ DEFAULT_OPTIONS = {
     "n_ctx": 8192,
     "threads": -1,
     "poll": -1,
+    "cache_type": "default",
+    "flash_attn": "default",
     "gguf_runtime": RUNTIME_AUTO,
     "llama_backend": "auto",
     "device": devices.AUTO,
@@ -710,15 +712,38 @@ POLL_TOOLTIP = (
 )
 
 
-def cpu_settings(settings: dict) -> dict:
-    """``threads`` and ``poll`` as keyword arguments, for either GGUF engine.
+CACHE_TYPE_TOOLTIP = (
+    "GGUF only: what the KV cache is stored as. 'default' passes nothing and llama.cpp "
+    "uses f16, which is what every earlier version of this pack got.\n\n"
+    "'q8_0' halves the cache for a difference that does not show in a rewrite. Whether "
+    "that is worth anything depends on which thing overflowed: the cache is charged per "
+    "token, so a 27B at 2048 tokens is a quarter of a GiB of cache against fifteen GiB "
+    "of weights, and halving the small number does not rescue the big one. Where it "
+    "does pay is a run already doing partial offload -- there the freed VRAM becomes "
+    "another layer that does not have to run on the CPU."
+)
 
-    -1 means "say nothing and let llama.cpp choose", which is what every
-    workflow saved before these two widgets existed will be holding.
+FLASH_ATTN_TOOLTIP = (
+    "GGUF only: flash attention. 'default' passes nothing, leaving llama.cpp on its own "
+    "'auto', which turns it on where the backend supports it.\n\n"
+    "'on' asks for it by name and 'off' refuses it -- worth having as a switch because "
+    "it changes the size of the compute buffer beside the KV cache, and because a "
+    "backend that mis-detects is easier to rule out than to guess at."
+)
+
+
+def cpu_settings(settings: dict) -> dict:
+    """The GGUF tuning knobs as keyword arguments, for either engine.
+
+    Every one of them has a value meaning "say nothing": -1 for the two counts,
+    "default" for the two names. That is what a workflow saved before these
+    widgets existed holds, and it sends the command line it always sent.
     """
     return {
         "threads": int(settings.get("threads", -1)),
         "poll": int(settings.get("poll", -1)),
+        "cache_type": str(settings.get("cache_type", "default")),
+        "flash_attn": str(settings.get("flash_attn", "default")),
     }
 
 
@@ -847,6 +872,14 @@ class MiniMaxH3RewriterOptions:
                 "poll": (
                     "INT",
                     {"default": -1, "min": -1, "max": 100, "tooltip": POLL_TOOLTIP},
+                ),
+                "cache_type": (
+                    list(devices.KV_CACHE_TYPES),
+                    {"default": "default", "tooltip": CACHE_TYPE_TOOLTIP},
+                ),
+                "flash_attn": (
+                    list(devices.FLASH_ATTENTION),
+                    {"default": "default", "tooltip": FLASH_ATTN_TOOLTIP},
                 ),
             },
         }

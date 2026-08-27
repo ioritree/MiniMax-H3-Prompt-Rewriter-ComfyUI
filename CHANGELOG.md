@@ -16,6 +16,37 @@ becomes a real version there.
 
 ### Added
 
+- **`cache_type` and `flash_attn` beside them**, for the run that does not quite
+  fit. `q8_0` halves the KV cache; flash attention shrinks the compute buffer
+  next to it. Neither touches the weights, which is the point: on a card already
+  doing partial offload the freed VRAM becomes another layer or two that does not
+  have to run on the CPU. Both default to `default`, which passes no flag at all.
+
+  Worth being clear about when they are *not* the answer. The cache is charged
+  per token and the weights are not: a 27B at Q4 is 15.4 GiB of weights against
+  0.25 GiB of cache at 1024 tokens, so halving the small number rescues nothing.
+  These are for the last gigabyte, not the first six.
+
+- **An allocation failure now says which of the two overflowed.** Both routes
+  printed a note about `context_size`, which is the right answer when the KV
+  cache did not fit and a dead end when the weights did not -- and the second is
+  the common case on a small card, because a model bigger than the card stays
+  bigger than the card at every context size. Somebody with that problem follows
+  the advice down to 512 tokens and watches it fail identically, which is exactly
+  what happened to the reader who prompted this.
+
+  `discovery.vram_note` does the arithmetic off the run's own files -- the card
+  from torch, the weights from the file, the cache from the GGUF header -- and
+  says it in numbers: *the weights alone are bigger than the card: 15.4 GiB
+  against 11.2 GiB, about 6.2 GiB too much... taking the context to zero would
+  not free 6.2 GiB. That is why lowering it changes nothing here.* Then it names
+  `gpu_layers`, which the multimodal note never mentioned at all, and says how
+  many layers this model would fit.
+
+  It runs inside a failure handler, so every part of it is guarded: anything
+  unreadable falls back to the old text rather than replacing a real error with
+  an error of its own.
+
 - **`threads` and `poll` on the options node**, which is what a full-offload run
   needs and never had. This pack always asks llama.cpp for every layer -- that is
   deliberate, and there is a note in `mtmd_engine` explaining why letting it fit
