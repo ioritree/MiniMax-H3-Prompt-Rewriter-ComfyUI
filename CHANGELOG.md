@@ -16,6 +16,27 @@ becomes a real version there.
 
 ### Added
 
+- **`output_language` reaches the Omni rewriter too.** Upstream 0.17.0 added
+  `MiniMax-H3 Prompt Rewriter Omni` and an Omni tab on the Universal Rewriter,
+  both of which arrived English-only; the widget is on both now, and
+  `prompt_template_omni` grew the same three language bullets the 8B adapter
+  is given - overrule the trained "write all sections in English" line by
+  quoting it back, keep structure and labels English, keep dialogue verbatim.
+  The label list is longer there, because Ref2AV also numbers `<Subject N>`,
+  `<Video N>` and `<Audio N>`.
+
+  `caption_question`, which upstream introduced in 0.16.6 to hold the
+  per-reference instructions, takes the language as well, so a replaced
+  question - which drops the length preset - still gets answered in the chosen
+  language.
+
+- **Per-reference instructions on `Reference Writer (Ref2VA)`.** Upstream's
+  0.16.6 strip band is drawn for this node too rather than only for
+  `Multi Reference Caption`, and the `reference_instructions` widget behind it
+  exists here now, so the text travels with the workflow. One JS file hooks
+  both node types; upstream's `multi_caption_switch.js` deletion is taken as
+  it stands.
+
 - **`MiniMax-H3 Reference Writer (Ref2VA)`, the reading and the writing in one
   node.** `Multi Reference Caption` turns the pixels into text and
   `Prompt Writer (Ref2VA)` turns that text into the six sections; between them
@@ -79,10 +100,12 @@ becomes a real version there.
   lets it place the media tokens, and b10310 has no `--chat-template-kwargs`, so
   there is no `enable_thinking=False` to forward on this route.
 
-  `answer_only` now lives in `fields` and both routes use it. The strip happens
-  after the progress line, so the character count on the node is still the raw
-  one - which is how you see the budget going into reasoning rather than into
-  the answer.
+  Upstream landed the same cut in 0.16.6, so `answer_only` lives in `constants`
+  now and both routes call it there; the local copy in `fields` is gone. What
+  survives here is the warning when the cut leaves nothing behind, and the
+  reference-block handling below. The strip happens after the progress line, so
+  the character count on the node is still the raw one - which is how you see
+  the budget going into reasoning rather than into the answer.
 
   When a model spends the whole budget inside an unclosed `<think>` and never
   writes the description, there is nothing left to cut to. `Reference Caption`
@@ -90,6 +113,206 @@ becomes a real version there.
   asset and carry on - one asset must not cost the ones already described - and
   drop its label with it, because an empty `Picture 2:` reads downstream as a
   real reference. The node's summary counts them.
+
+## 0.17.0 - 2026-08-26
+
+### Added
+
+- **MiniMax-H3 Prompt Rewriter Omni**, for LightX2V's third adapter - the first
+  that hears. It is trained on Qwen2.5-Omni-7B, the same model this pack's
+  captioners already use, so a reference reaches it as the asset itself rather
+  than as a sentence somebody wrote about it: the picture, the clip, or the
+  sound. It is also the only one of the three trained on **Ref2AV**, the
+  full-reference task, which answers with six fields instead of three.
+
+  One growing socket takes an IMAGE, a VIDEO or an AUDIO, so there is no wrong
+  socket to plug into: what a reference is called follows from what it is, and
+  pictures are numbered among pictures, sounds among sounds. The strip below
+  shows what is connected, in what order, and what each will be called - and
+  that order is the ordering: drag the second picture to the front and it
+  becomes `<Picture 1>`. There is deliberately no relabelling here, unlike the
+  Universal Writer's strip: the socket settles what a reference is, and a
+  *subject* is something this adapter produces in `subject_definitions`, not
+  something the request supplies.
+
+  `duration` is snapped before it is written into the turn. MiniMax-H3 generates
+  on a 17n+5 frame grid at 24 fps, so most lengths do not exist: ask for 10
+  seconds and it is 243 frames, 10.13 s, and that is the number the alignment
+  line quotes back. The widget stays what you meant.
+
+- **The Omni adapter as GGUF**, converted from LightX2V's safetensors with
+  llama.cpp's `convert_lora_to_gguf.py` and published at
+  [pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF)
+  in `F16` (0.65 GB) and `Q8_0` (0.34 GB, same rewrite behaviour). Which means
+  the Omni rewriter runs on the llama.cpp route with nothing installed, at a 6.2
+  GB download rather than the 22.4 GB the safetensors base costs.
+
+- **`models_omni` and `adapters_omni` in `models.json`**, holding the
+  Qwen2.5-Omni-7B bases in both shapes the adapter is published for. Two kinds
+  of near-miss are marked in the list rather than hidden: a Qwen2.5-Omni-**3B**
+  is `(wrong size for the adapter)`, and a **Qwen2.5-VL-7B** - the same
+  architecture string, the same 28 blocks, the same width, so the adapter *would*
+  attach - is `(vision only, not an Omni build)`, told apart by its projector
+  having no audio encoder.
+
+- **A third tab on the Universal Rewriter, and Ref2VA with it.** Same prompt,
+  same two frames, third adapter, one click. `model_omni` and `quantization_omni`
+  belong to the tab; everything above them is shared, as before.
+
+  The tab also brings the fifth task, and two sockets to feed it:
+  `reference_video` and `reference_audio`, read by `Ref2VA` and by nothing else -
+  the other two adapters have no ear, and the four frame tasks take pictures
+  alone, so a sound connected to `FL2VA` is refused by name rather than quietly
+  dropped. On `Ref2VA` everything connected is a reference in socket order:
+  `first_frame`, `last_frame`, the clip, the sound.
+
+  Its four extra outputs are appended **after** the three every task fills rather
+  than interleaved with them, because ComfyUI addresses an output link by its
+  slot index: putting `subject_definitions` in the middle would have moved
+  `overall_soundscape` in every workflow already built on this node. The same
+  trap as widget positions, one layer down.
+
+  Four references and no strip, where the Prompt Rewriter Omni node takes twelve
+  and lets you drag them: order is the whole labelling rule, and with four
+  sockets the order is the order of the sockets.
+
+### Fixed
+
+- **A section deleted from the model list stays deleted.** Removing entries one
+  at a time already stuck -- `seed_offered` records every name the packaged list
+  has ever put in front of you, so anything you take out is not put back. But
+  removing a whole section did not: the merge read an absent section as "this
+  installation predates it" and copied the packaged one in wholesale, every
+  start, forever. Which made a section the one edit the file would not keep,
+  in the one file whose whole point is that it is yours to edit.
+
+  The two situations are told apart by the same record the entries use. An
+  installation that predates a section has never been offered its entries and
+  gets all of them; somebody who deleted the section has been offered every one
+  and gets none. Found while checking that `models_omni` and `adapters_omni`
+  reach an existing user file - they do, and this was underneath.
+
+- **A reference frame no longer arrives at the vision tower full size.** Qwen
+  spends a token per 28x28 block, so a 1616x1616 picture - which is what a
+  ComfyUI workflow hands over without thinking about it - is 3249 tokens. Two of
+  them overflowed an 8k context before a word of the prompt was counted, and
+  `FL2AV` died at `decode: failed to find a memory slot for batch of size 1316`
+  with both pictures already encoded. `I2AV` with one picture survived, which is
+  what made it look like a broken task rather than a budget.
+
+  The size is not the only thing wrong with that. LightX2V's own inference
+  scripts cap a picture on the processor - 301056 pixels for the Omni adapter,
+  1024x1024 for the 8B - so a full-size frame is also a shape neither model saw
+  in training. Both nodes now scale to their adapter's own ceiling, and a frame
+  taken from a clip is capped harder still, at 100352 pixels, for the reason a
+  clip is many pictures.
+
+  The context is then sized to what the turn actually costs, measured off the
+  written files rather than guessed, so a `Ref2AV` with eight references widens
+  it instead of failing.
+
+- **The Omni safetensors base is no longer refused as the wrong model.** The
+  check that reads `config.json` looked one level in, at `text_config`.
+  Qwen2.5-Omni keeps its language model two levels down, under
+  `thinker_config.text_config`, because the checkpoint holds a talker and a
+  vocoder as well - so the top level has no `hidden_size` at all and the base the
+  adapter was trained on was reported as `not Qwen2.5-Omni-7B`. It now walks
+  down.
+
+- **And it now loads.** `AutoModelForImageTextToText` has no entry for
+  `qwen2_5_omni`, only for the thinker inside it, which is the half the adapter
+  was cut for and the only half that writes anything - so even past the check
+  above the load would have failed with "unrecognized configuration class". The
+  loader descends the same nested configs and takes the class from Transformers'
+  own mapping.
+
+- **A full KV cache no longer reports itself as an unreadable projector.** `find
+  a memory slot` was not among the strings the failure hint recognised, so it
+  fell through to the note about projector formats and sent the reader off to
+  change models when the fix was one number.
+
+## 0.16.6 - 2026-08-25
+
+### Added
+
+- **Each reference can be asked its own question.** Under every square on the
+  strip there is now a narrow band in the same colour: dark while the reference
+  is asked its role's usual question, lit once it is asked something else. Click
+  it to write that question, right-click to take it back, hover to read it. It
+  is per reference rather than per node because one node describes a picture, a
+  clip and a sound at once, and a single box would have had to ask all three the
+  same thing.
+
+  **Two modes, and the band says which.** `+ instr` adds the line to the role's
+  question; `= instr`, on a solid band, asks it *instead*. Both are needed and
+  neither can be the only one: "never mention the window" is a rule, and asked
+  on its own it leaves nothing wanting a description - the model answers the
+  rule, with "No". "Always answer 'blah blah blah'" is a whole question, and
+  leaving the role's question in front of it makes a small model settle the
+  contradiction by describing anyway. A replacement drops the length preset too,
+  since whoever writes the question owns the shape of its answer.
+
+  The text rides in a hidden JSON widget, so it travels with the workflow and
+  through the API like every other setting. A bare string there is read as an
+  addition, which is the safe half for anything hand-written.
+
+  Requested by [@808charlie](https://github.com/808charlie) in
+  [#8](https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/issues/8).
+
+- **`system_prompt` on the writers**, which is what aims them at something other
+  than MiniMax-H3. The assembled guide is replaced wholesale by what you write
+  there, and the guide is then not even fetched - so a system prompt written for
+  LTX, Krea or Wan turns these into writers for those, offline, with no document
+  downloaded to be ignored. The shortest way in is the
+  `MiniMax-H3 Guide Prompt (any LLM)` node, which hands you the stock prompt on
+  an output: take it, edit it, connect it back.
+
+  The task message is never replaced - it carries the prompt, the aspect ratio
+  and the duration, which any guide needs. And the answer is still split into
+  the H3 sections, so a guide that replies with a paragraph fills
+  `rewritten_prompt` and leaves the section outputs empty.
+
+  Requested by [@808charlie](https://github.com/808charlie) in
+  [#8](https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/issues/8).
+
+### Fixed
+
+- **A captioner's reasoning no longer ends up in the reference block.** The CLIP
+  captioner has always cut the `<think>` block out of an answer; the GGUF one
+  never did, so an empty `<think> </think>` opened every caption and a thinking
+  model wrote its whole deliberation into `reference_assets` - from where it
+  travelled on into the writer's prompt. Both paths cut it now.
+
+  The cut alone is not enough, and cannot be: the writers render the chat
+  template themselves and pass `enable_thinking=False`, while a caption cannot,
+  because `llama-mtmd-cli` applies the template itself - that is what puts the
+  media tokens in the right place - and publishes no switch for the thought
+  channel. Reasoning is therefore still charged against `--predict`, which is
+  how a thinking model produces a page of deliberation and half a sentence of
+  caption. So every caption question now ends with a line asking for the
+  description alone, which is the only instrument this path has.
+
+  Reported by [@808charlie](https://github.com/808charlie) in
+  [#8](https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/issues/8).
+
+### Changed
+
+- **Multi Reference Caption draws the same strip as the Universal Writer.** Its
+  switches were drawn straight onto the canvas, which the Nodes 2.0 renderer
+  does not draw at all; the squares are HTML, which both renderers do. So they
+  are one mechanism now, and the node that had checkboxes has coloured squares
+  instead: click one to silence its reference, read the label to see what it
+  will be called and in what order. Dragging is not among them - this node
+  writes the block in the guide's own order and the group an asset is plugged
+  into decides its label.
+
+- **New widgets go at the end of a node, always.** ComfyUI restores a saved
+  node's widget values by position, so a widget added anywhere else hands every
+  widget below it its neighbour's value: a workflow saved before the upgrade
+  came back with `max_frames` holding what `context_size` had. Nothing shipped
+  in that state, but it is worth writing down, because the obvious place to put
+  a new setting is next to the one it belongs with.
+
 ## 0.16.5 - 2026-08-24
 
 ### Fixed

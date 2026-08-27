@@ -55,21 +55,22 @@ from .multi_caption import (
 )
 from .nodes import (
     BYPASS_TOOLTIP,
-    CAPTION_INSTRUCTIONS,
     CAPTION_LANGUAGE_TOOLTIP,
     CAPTION_LENGTHS,
     CATEGORY,
     DEFAULT_OPTIONS,
     EMPTY_CAPTION_HINT,
+    INSTRUCTIONS_TOOLTIP,
     OPTIONS_TYPE,
     OUTPUT_LANGUAGE_TOOLTIP,
     _ensure_pair,
     _guided_text,
     _report,
     _resolve_captioner_choice,
-    caption_language_clause,
+    caption_question,
     captioner_choices,
     next_index,
+    slot_instructions,
     writer_choices,
 )
 from .progress import NodeProgress
@@ -257,6 +258,15 @@ class MiniMaxH3ReferenceWriterRef(io.ComfyNode):
                     optional=True,
                     tooltip=OUTPUT_LANGUAGE_TOOLTIP,
                 ),
+                # Last, like every widget added after a node shipped: ComfyUI
+                # restores saved values by position. It is the strip's band that
+                # writes here, the same one the caption node draws.
+                io.String.Input(
+                    "reference_instructions",
+                    default="{}",
+                    optional=True,
+                    tooltip=INSTRUCTIONS_TOOLTIP,
+                ),
             ],
             outputs=[
                 io.String.Output(display_name="rewritten_prompt"),
@@ -292,6 +302,7 @@ class MiniMaxH3ReferenceWriterRef(io.ComfyNode):
         bypass=False,
         caption_language=DEFAULT_OUTPUT_LANGUAGE,
         output_language=DEFAULT_OUTPUT_LANGUAGE,
+        reference_instructions="{}",
     ) -> io.NodeOutput:
         progress = NodeProgress(cls.hidden.unique_id)
         block = (previous or "").strip()
@@ -335,6 +346,8 @@ class MiniMaxH3ReferenceWriterRef(io.ComfyNode):
         elif assets:
             clip_caption.check(clip, kinds)
 
+        asked_for = slot_instructions(reference_instructions)
+
         # One step per asset plus one for the rewrite, so the bar does not sit
         # at "done" through the longest part of the run.
         progress.set_total(len(assets) + 1)
@@ -348,9 +361,8 @@ class MiniMaxH3ReferenceWriterRef(io.ComfyNode):
                 f"{asset.role} {index}: reading {asset.slot} ({done + 1} of {len(assets)})",
             )
 
-            asked = (
-                f"{CAPTION_INSTRUCTIONS[asset.role]} {CAPTION_LENGTHS[length]}"
-                f"{caption_language_clause(caption_language)}"
+            asked = caption_question(
+                asset.role, length, asked_for.get(asset.slot), caption_language
             )
             as_image = asset.value if asset.kind == "image" or frames else None
             as_audio = asset.value if asset.kind == "audio" else None

@@ -392,8 +392,20 @@ def build_messages(
     duration: float,
     references: str = "",
     language: str = DEFAULT_OUTPUT_LANGUAGE,
+    system: str = "",
 ) -> list[dict[str, str]]:
-    """The chat messages a guided writer sends to whatever model is running."""
+    """The chat messages a guided writer sends to whatever model is running.
+
+    ``system`` replaces everything assembled from the guide, which is the point
+    of it: the H3 format lives in that text and nowhere else, so a system prompt
+    written for LTX or Krea retargets these nodes without touching the code. The
+    guide is then not needed at all, and the caller is expected to skip fetching
+    it -- an offline machine should not download 24 KB it will not read.
+
+    The task message is left alone. It carries the prompt, the aspect ratio and
+    the duration, which every writing guide needs whatever house style it asks
+    for, and it is the half a user has no reason to rewrite.
+    """
     if mode == REF_MODE and not (references or "").strip():
         raise ValueError(
             "Ref2VA describes how a target video reuses reference assets, so it needs to know "
@@ -403,8 +415,12 @@ def build_messages(
             "    Audio 1: voice-timbre reference for the woman\n"
             "With no reference assets, use the T2VA writer instead."
         )
+    given = (system or "").strip()
     return [
-        {"role": "system", "content": system_prompt(guide, mode, duration, language)},
+        {"role": "system", "content": given or system_prompt(guide, mode, duration, language)},
+        # The task message is not replaced, so the language line survives a
+        # system prompt written for another model: a guide aimed at LTX or Krea
+        # has no opinion about which language the answer comes back in.
         {
             "role": "user",
             "content": user_prompt(mode, prompt, resolution, duration, references, language),

@@ -32,8 +32,8 @@ from __future__ import annotations
 import logging
 
 from . import media
-from .constants import normalize_seed
-from .fields import answer_only
+
+from .constants import answer_only, normalize_seed
 
 log = logging.getLogger(__name__)
 

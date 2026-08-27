@@ -45,18 +45,21 @@ from .constants import (
 from .fields import split_sections
 from .nodes import (
     BYPASS_TOOLTIP,
-    CAPTION_INSTRUCTIONS,
     CAPTION_LENGTHS,
     CATEGORY,
     DEFAULT_OPTIONS,
+    INSTRUCTIONS_TOOLTIP,
     OPTIONS_TYPE,
     OUTPUT_LANGUAGE_TOOLTIP,
+    SYSTEM_PROMPT_TOOLTIP,
     _ensure_pair,
     _guided_text,
     _report,
     _resolve_captioner_choice,
+    caption_question,
     captioner_choices,
     next_index,
+    slot_instructions,
     writer_choices,
 )
 from .multi_caption import _check_encoders
@@ -449,6 +452,19 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
                     optional=True,
                     tooltip=OUTPUT_LANGUAGE_TOOLTIP,
                 ),
+                io.String.Input(
+                    "reference_instructions",
+                    default="{}",
+                    optional=True,
+                    tooltip=INSTRUCTIONS_TOOLTIP,
+                ),
+                io.String.Input(
+                    "system_prompt",
+                    default="",
+                    multiline=True,
+                    optional=True,
+                    tooltip=SYSTEM_PROMPT_TOOLTIP,
+                ),
             ],
             outputs=[
                 io.String.Output(display_name="rewritten_prompt"),
@@ -476,6 +492,8 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
         clip=None,
         previous="",
         reference_layout="{}",
+        reference_instructions="{}",
+        system_prompt="",
         options=None,
         max_frames=media.DEFAULT_MAX_FRAMES,
         context_size=mtmd_engine.CONTEXT_FROM_MODEL,
@@ -526,6 +544,8 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
             else:
                 clip_caption.check(clip, kinds)
 
+            asked_for = slot_instructions(reference_instructions)
+
             progress.set_total(len(assets))
             for done, asset in enumerate(assets):
                 index = next_index(block, asset.role)
@@ -534,7 +554,9 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
                     f"{asset.role} {index}: reading {asset.slot} ({done + 1} of {len(assets)})",
                 )
 
-                asked = f"{CAPTION_INSTRUCTIONS[asset.role]} {CAPTION_LENGTHS[caption_length]}"
+                asked = caption_question(
+                    asset.role, caption_length, asked_for.get(asset.slot)
+                )
                 note = _clip_note(asset, max_frames)
                 if note:
                     asked = f"{note}\n\n{asked}"
@@ -603,6 +625,7 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
         text = _guided_text(
             task, writer_model, prompt, resolution, duration, material,
             greedy, seed, keep_model_loaded, settings, progress, output_language,
+            system_prompt,
         )
 
         names = guide_prompt.FIELDS_FOR_MODE[task]

@@ -35,8 +35,7 @@ import logging
 import os
 
 from . import devices, discovery, llamacpp, media, runner
-from .constants import normalize_seed
-from .fields import answer_only
+from .constants import answer_only, normalize_seed
 from .progress import NodeProgress
 
 log = logging.getLogger(__name__)
@@ -70,6 +69,7 @@ CONTEXT_EXCEEDED = (
     "too long",
     "exceed",
     "n_batch",
+    "find a memory slot",
 )
 
 
@@ -156,8 +156,9 @@ def _failure_hint(message: str, n_ctx: int) -> str:
         size = f"{n_ctx} tokens" if n_ctx else "the model's own"
         return (
             f"That is the other direction: the pictures did not fit the context, which was "
-            f"{size}. Raise 'context_size' on the node, or lower 'max_frames' -- mtmd charges "
-            f"a frame by its resolution, so a long clip at full size is expensive."
+            f"{size}. Raise 'context_size' -- or 'n_ctx' on the Options node -- or lower "
+            f"'max_frames': mtmd charges a frame by its resolution, so a long clip at full "
+            f"size is expensive."
         )
     return (
         "Not every multimodal GGUF works here: llama.cpp's mtmd has to understand the "
@@ -361,17 +362,16 @@ def describe(
         except runner.ChildFailed as error:
             raise RuntimeError(f"{error}\n\n{_failure_hint(str(error), n_ctx)}") from error
 
+    text = answer_only(text.replace("\r\n", "\n"))
+
     if progress is not None:
         progress.finish(f"Done · {len(text)} chars{runner.speed(stderr_text)}")
 
-    # The reasoning is cut here rather than at the caller, so both caption nodes
-    # get it, and after the progress line so the raw length still shows how much
-    # of the budget the model spent thinking. mtmd-cli applies the chat template
-    # itself and b10310 has no ``--chat-template-kwargs``, so there is no
-    # ``enable_thinking=False`` to forward on this route -- a thinking build
-    # writes the block whatever the instruction says.
-    answer = answer_only(text.replace("\r\n", "\n"))
-    if text and not answer:
+    # mtmd-cli applies the chat template itself and b10310 has no
+    # ``--chat-template-kwargs``, so there is no ``enable_thinking=False`` to
+    # forward on this route -- a thinking build writes the block whatever the
+    # instruction says, and the cut above is the only instrument there is.
+    if not text:
         log.warning(
             "[minimax_h3_rewriter.mtmd_engine] %s spent the whole %d-token budget on an "
             "unfinished <think> block and never wrote the answer. Raise max_new_tokens in the "
@@ -379,4 +379,4 @@ def describe(
             os.path.basename(model_path),
             int(max_new_tokens),
         )
-    return answer
+    return text
