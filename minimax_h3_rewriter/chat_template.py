@@ -11,12 +11,31 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 log = logging.getLogger(__name__)
 
 TEMPLATE_KEY = "tokenizer.chat_template"
 BOS_KEY = "tokenizer.ggml.bos_token_id"
 EOS_KEY = "tokenizer.ggml.eos_token_id"
+
+#: A template that sets ``enable_thinking`` itself, before it reads ours.
+#:
+#: Gemma-4-31B's template opens with ``{%- set enable_thinking = true -%}``, so
+#: the flag rendered here is overwritten by the first statement of the template
+#: it is passed to and the model reasons anyway -- hundreds of tokens of English
+#: analysis in front of a rewrite that was asked for three fields and nothing
+#: else. The same template already knows how to be quiet: told thinking is off
+#: it ends the prompt with an empty, already-closed thought channel
+#: (``<|channel>thought\n<channel|>``) and the model starts on the answer. Only
+#: the assignment stands between the two behaviours.
+#:
+#: So an explicit ``enable_thinking=False`` deletes it. A template that leaves
+#: the flag to its caller -- which is nearly all of them -- has nothing to match
+#: and is rendered exactly as before.
+FORCED_THINKING = re.compile(
+    r"\{%-?\s*set\s+enable_thinking\s*=\s*[Tt]rue\s*-?%\}\s*"
+)
 
 
 class TemplateError(RuntimeError):
@@ -77,6 +96,15 @@ def render(
 ) -> str:
     if not template:
         raise TemplateError("the model file carries no chat template")
+
+    if not enable_thinking:
+        template, forced = FORCED_THINKING.subn("", template)
+        if forced:
+            log.debug(
+                "[minimax_h3_rewriter.chat_template.render] template set enable_thinking "
+                "itself; dropped %d assignment(s) so the flag passed in is the one that "
+                "applies", forced,
+            )
 
     def attempt(payload):
         return _environment().from_string(template).render(
