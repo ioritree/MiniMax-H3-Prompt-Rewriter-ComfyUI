@@ -321,11 +321,17 @@ def load(
     n_ctx: int,
     device: str = devices.AUTO,
     progress: NodeProgress | None = None,
+    threads: int = -1,
 ):
     """Return a cached ``Llama`` for this combination of files and placement.
 
     The device is part of the key: without it, switching cards would hand back
-    the instance still resident on the old one.
+    the instance still resident on the old one. So is the thread count, which
+    ``Llama`` takes once at construction and will not be told again.
+
+    There is no ``poll`` here. It is a threadpool setting the binaries expose on
+    the command line and the wheel does not publish at all, so the CPU knob that
+    reaches this route is the thread count alone.
     """
     device = devices.validate(device)
     key = (
@@ -334,6 +340,7 @@ def load(
         int(gpu_layers),
         int(n_ctx),
         device,
+        int(threads),
     )
 
     with _LOCK:
@@ -360,6 +367,8 @@ def load(
             "n_ctx": int(n_ctx),
             "verbose": False,
         }
+        if int(threads) >= 0:
+            kwargs["n_threads"] = int(threads)
         kwargs.update(devices.llama_cpp_kwargs(device))
 
         api = _lora_api(llama_cpp) if adapter_path else ""
@@ -508,10 +517,11 @@ def rewrite(
     keep_loaded: bool,
     device: str = devices.AUTO,
     progress: NodeProgress | None = None,
+    threads: int = -1,
     **generation,
 ) -> str:
     """Load (or reuse) the GGUF rewriter, generate once, release unless kept."""
-    llama = load(model_path, adapter_path, gpu_layers, n_ctx, device, progress)
+    llama = load(model_path, adapter_path, gpu_layers, n_ctx, device, progress, threads)
     try:
         return generate(llama, progress=progress, **generation)
     finally:

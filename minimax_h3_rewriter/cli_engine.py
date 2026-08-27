@@ -90,6 +90,8 @@ def build_command(
     top_k: int,
     repetition_penalty: float,
     device: str = devices.AUTO,
+    threads: int = -1,
+    poll: int = -1,
 ) -> list[str]:
     layers = devices.layers_for(device, gpu_layers)
     layers = ALL_LAYERS if layers < 0 else layers
@@ -109,6 +111,12 @@ def build_command(
         "--no-warmup",
         "--simple-io",
     ]
+    # Both are left unsaid at -1, so a run that never touches these widgets sends
+    # the command line it always sent. llama.cpp's own defaults are one thread per
+    # core and polling level 50, which is a busy-wait: fine when the CPU is doing
+    # the work, expensive when every layer is on the card and the threadpool is
+    # only waiting for it.
+    command += devices.cpu_arguments(threads, poll)
     if adapter_path:
         command += ["--lora", adapter_path]
     if greedy:
@@ -137,6 +145,8 @@ def generate(
     top_k: int,
     repetition_penalty: float,
     device: str = devices.AUTO,
+    threads: int = -1,
+    poll: int = -1,
     progress: NodeProgress | None = None,
 ) -> str:
     device = devices.validate(device)
@@ -149,6 +159,7 @@ def generate(
     command = build_command(
         binary, model_path, adapter_path, prompt_file, gpu_layers, n_ctx, seed,
         greedy, max_new_tokens, temperature, top_p, top_k, repetition_penalty, device,
+        threads, poll,
     )
 
     runner.free_comfy_vram(device)

@@ -54,6 +54,7 @@ from .nodes import (
     _ensure_present,
     _gguf_text,
     _language_widget,
+    cpu_settings,
     _refuse_problem,
     _resolve_adapter,
     _verify_base_model,
@@ -341,6 +342,7 @@ def _with_frames(
             device=settings["device"],
             backend=settings["llama_backend"],
             auto_download=settings["auto_download"],
+            **cpu_settings(settings),
             progress=progress,
         )
 

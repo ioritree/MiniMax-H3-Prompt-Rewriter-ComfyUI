@@ -69,6 +69,7 @@ from .nodes import (
     _resolve_captioner_choice,
     caption_question,
     captioner_choices,
+    cpu_settings,
     next_index,
     slot_instructions,
     writer_choices,
@@ -400,6 +401,7 @@ class MiniMaxH3ReferenceWriterRef(io.ComfyNode):
                     device=settings["device"],
                     backend=settings["llama_backend"],
                     auto_download=settings["auto_download"],
+                    **cpu_settings(settings),
                     progress=progress,
                 )
 

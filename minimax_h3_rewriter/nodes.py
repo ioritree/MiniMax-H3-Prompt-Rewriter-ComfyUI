@@ -75,6 +75,8 @@ DEFAULT_OPTIONS = {
     "auto_download": True,
     "gpu_layers": -1,
     "n_ctx": 8192,
+    "threads": -1,
+    "poll": -1,
     "gguf_runtime": RUNTIME_AUTO,
     "llama_backend": "auto",
     "device": devices.AUTO,
@@ -675,12 +677,49 @@ def _gguf_text(settings: dict, **common) -> str:
                 f"'{RUNTIME_BINARY}' to run the official binaries instead.\n\n"
                 + gguf_engine.INSTALL_HINT
             )
-        return gguf_engine.rewrite(**common)
+        # The wheel takes the thread count at construction and publishes no
+        # equivalent of --poll, so only half of the pair reaches this route.
+        return gguf_engine.rewrite(threads=cpu_settings(settings)["threads"], **common)
     return cli_engine.rewrite(
         backend=settings["llama_backend"],
         auto_download=settings["auto_download"],
+        **cpu_settings(settings),
         **common,
     )
+
+
+THREADS_TOOLTIP = (
+    "GGUF only: CPU threads llama.cpp runs. -1 leaves it to llama.cpp, which takes "
+    "one per core.\n\n"
+    "Worth lowering when the whole model is on the GPU, which is what this pack asks "
+    "for: the graph runs on the card, but the CPU threadpool is still there waiting on "
+    "it, and on a many-core machine that reads as near-full CPU load for work nobody "
+    "is doing. 4 is plenty when nothing is offloaded to the CPU. It is not free on a "
+    "run that *does* keep layers on the CPU -- lower 'gpu_layers' and this together "
+    "and generation slows down."
+)
+
+POLL_TOOLTIP = (
+    "GGUF only: how llama.cpp's CPU threads wait for work. -1 leaves it to llama.cpp, "
+    "whose default is 50 -- busy-waiting.\n\n"
+    "Set 0 and they sleep instead of spinning. That is the other half of the same "
+    "symptom as 'threads': with every layer on the GPU the CPU side spends the run "
+    "waiting, and at the stock polling level it waits by burning a core. 0 costs a "
+    "little latency at each handover, measurable on a CPU-bound run and lost in the "
+    "noise on a GPU-bound one."
+)
+
+
+def cpu_settings(settings: dict) -> dict:
+    """``threads`` and ``poll`` as keyword arguments, for either GGUF engine.
+
+    -1 means "say nothing and let llama.cpp choose", which is what every
+    workflow saved before these two widgets existed will be holding.
+    """
+    return {
+        "threads": int(settings.get("threads", -1)),
+        "poll": int(settings.get("poll", -1)),
+    }
 
 
 class MiniMaxH3RewriterOptions:
@@ -798,6 +837,16 @@ class MiniMaxH3RewriterOptions:
                             "picked and trust — not because a downloaded workflow asked for it."
                         ),
                     },
+                ),
+                # Last, like every widget added after a node shipped: ComfyUI
+                # restores saved values by position.
+                "threads": (
+                    "INT",
+                    {"default": -1, "min": -1, "max": 256, "tooltip": THREADS_TOOLTIP},
+                ),
+                "poll": (
+                    "INT",
+                    {"default": -1, "min": -1, "max": 100, "tooltip": POLL_TOOLTIP},
                 ),
             },
         }
@@ -1198,10 +1247,13 @@ def _guided_text(
                 f"Install it, or set gguf_runtime to '{RUNTIME_AUTO}' or '{RUNTIME_BINARY}' to "
                 f"run the official binaries instead.\n\n" + gguf_engine.INSTALL_HINT
             )
-        return gguf_engine.rewrite(**common)
+        # The wheel takes the thread count at construction and publishes no
+        # equivalent of --poll, so only half of the pair reaches this route.
+        return gguf_engine.rewrite(threads=cpu_settings(settings)["threads"], **common)
     return cli_engine.rewrite(
         backend=settings["llama_backend"],
         auto_download=settings["auto_download"],
+        **cpu_settings(settings),
         **common,
     )
 
@@ -2050,6 +2102,7 @@ class MiniMaxH3ReferenceCaption:
                     device=settings["device"],
                     backend=settings["llama_backend"],
                     auto_download=settings["auto_download"],
+                    **cpu_settings(settings),
                     progress=progress,
                 )
 

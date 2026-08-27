@@ -188,6 +188,25 @@ def llama_arguments(spec: str) -> list[str]:
     return ["--device", f"CUDA{ordinal}"] if ordinal is not None else []
 
 
+def cpu_arguments(threads: int = -1, poll: int = -1) -> list[str]:
+    """``--threads`` and ``--poll``, or nothing at all.
+
+    -1 means "do not pass the flag", so a run that never touches these sends the
+    command line it always sent and llama.cpp picks as it always did: one thread
+    per core, polling level 50. Both are worth setting the other way once every
+    layer is on the GPU -- the threadpool is then waiting rather than working,
+    and at the stock polling level it waits by spinning.
+    """
+    arguments: list[str] = []
+    # 0 threads is not a thing llama.cpp accepts, so it reads as "unset" like -1
+    # rather than being passed through to be refused.
+    if int(threads) >= 1:
+        arguments += ["--threads", str(int(threads))]
+    if int(poll) >= 0:
+        arguments += ["--poll", str(min(max(int(poll), 0), 100))]
+    return arguments
+
+
 def layers_for(spec: str, gpu_layers: int) -> int:
     """The offload count once the device has had its say."""
     return 0 if is_cpu(spec) else int(gpu_layers)

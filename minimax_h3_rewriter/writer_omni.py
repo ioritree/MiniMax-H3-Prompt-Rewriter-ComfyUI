@@ -55,6 +55,7 @@ from .nodes import (
     DEFAULT_OPTIONS,
     LOCAL_PREFIX,
     LORA_LANGUAGE_TOOLTIP,
+    cpu_settings,
     OPTIONS_TYPE,
     _announce,
     _ensure_pair,
@@ -469,6 +470,7 @@ def _with_media(
             device=settings["device"],
             backend=settings["llama_backend"],
             auto_download=settings["auto_download"],
+            **cpu_settings(settings),
             progress=progress,
         )
 

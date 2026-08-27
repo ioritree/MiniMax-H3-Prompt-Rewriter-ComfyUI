@@ -184,6 +184,8 @@ def build_command(
     device: str = devices.AUTO,
     adapter_path: str | None = None,
     system_prompt: str = "",
+    threads: int = -1,
+    poll: int = -1,
 ) -> list[str]:
     layers = devices.layers_for(device, gpu_layers)
     # Keep asking for every layer rather than letting llama.cpp fit the run to
@@ -200,6 +202,7 @@ def build_command(
         "--ctx-size", str(int(n_ctx)),
         "--predict", str(int(max_new_tokens)),
         "--seed", str(normalize_seed(seed)),
+        *devices.cpu_arguments(threads, poll),
     ]
     if adapter_path:
         command += ["--lora", adapter_path]
@@ -293,6 +296,8 @@ def describe(
     auto_download: bool = True,
     adapter_path: str | None = None,
     system_prompt: str = "",
+    threads: int = -1,
+    poll: int = -1,
     progress: NodeProgress | None = None,
 ) -> str:
     """Fetch the runtime if needed, describe the attachments once, and return the text.
@@ -337,7 +342,7 @@ def describe(
         command = build_command(
             binary, model_path, mmproj_path, instruction, attachments,
             gpu_layers, n_ctx, seed, greedy, max_new_tokens, temperature, top_p, top_k, device,
-            adapter_path, system_prompt,
+            adapter_path, system_prompt, threads, poll,
         )
 
         runner.free_comfy_vram(device)

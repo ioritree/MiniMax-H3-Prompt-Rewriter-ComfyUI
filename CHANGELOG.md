@@ -16,6 +16,32 @@ becomes a real version there.
 
 ### Added
 
+- **`threads` and `poll` on the options node**, which is what a full-offload run
+  needs and never had. This pack always asks llama.cpp for every layer -- that is
+  deliberate, and there is a note in `mtmd_engine` explaining why letting it fit
+  the run itself measures 20x slower -- but neither command builder ever passed
+  `--threads` or `--poll`. So llama.cpp used its own defaults: one thread per
+  core, and polling level 50, which is a busy-wait. The graph runs on the card
+  while the CPU threadpool spins waiting for it, and on a many-core machine that
+  reads as near-full CPU load for work nobody is doing.
+
+  Both default to `-1`, meaning "say nothing", so a workflow saved before these
+  existed sends the command line it always sent. `threads 4` and `poll 0` are
+  the pair worth trying when everything is on the GPU. They are not free on a run
+  that *does* keep layers on the CPU, which is why neither is the default.
+
+  `--poll` is a threadpool setting the official binaries expose and
+  llama-cpp-python does not publish at all, so the wheel route gets the thread
+  count alone -- and takes it at construction, so it is part of the load cache
+  key rather than a per-call argument.
+
+  Not to be confused with `--n-cpu-moe`, which was what prompted the look: that
+  keeps a *MoE* model's expert weights in system RAM to save VRAM, deliberately
+  moving work onto the CPU. Every base this pack ships is dense -- Qwen3.6-27B,
+  Qwen3-VL-8B, Qwen2.5-Omni-7B, and every writer and captioner in the list -- so
+  the flag has no tensors to match and would do nothing here, and where it does
+  something it raises CPU load rather than lowering it.
+
 - **`output_language` reaches the Omni rewriter too.** Upstream 0.17.0 added
   `MiniMax-H3 Prompt Rewriter Omni` and an Omni tab on the Universal Rewriter,
   both of which arrived English-only; the widget is on both now, and
