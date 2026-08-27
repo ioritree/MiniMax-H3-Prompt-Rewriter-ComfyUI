@@ -1,5 +1,5 @@
 diff --git a/minimax_h3_rewriter/constants.py b/minimax_h3_rewriter/constants.py
-index 4f22933..dfd1d7b 100644
+index c0ab9ca..0e59701 100644
 --- a/minimax_h3_rewriter/constants.py
 +++ b/minimax_h3_rewriter/constants.py
 @@ -40,6 +40,55 @@ REF_OUTPUT_FIELDS = (
@@ -59,7 +59,7 @@ index 4f22933..dfd1d7b 100644
  
  #: transformers' set_seed feeds numpy, whose legacy seeding refuses anything at
 diff --git a/minimax_h3_rewriter/guide_prompt.py b/minimax_h3_rewriter/guide_prompt.py
-index cfc4403..d5815b9 100644
+index f711327..ae32381 100644
 --- a/minimax_h3_rewriter/guide_prompt.py
 +++ b/minimax_h3_rewriter/guide_prompt.py
 @@ -6,7 +6,7 @@ unprompted, and its system prompt is seven lines long. Here the format has to be
@@ -362,16 +362,19 @@ index cfc4403..d5815b9 100644
      duration: float,
      references: str = "",
 +    language: str = DEFAULT_OUTPUT_LANGUAGE,
+     system: str = "",
  ) -> list[dict[str, str]]:
-     """The chat messages a guided writer sends to whatever model is running."""
-     if mode == REF_MODE and not (references or "").strip():
-@@ -216,8 +404,11 @@ def build_messages(
-             "With no reference assets, use the T2VA writer instead."
+     """The chat messages a guided writer sends to whatever model is running.
+@@ -229,8 +417,14 @@ def build_messages(
          )
+     given = (system or "").strip()
      return [
--        {"role": "system", "content": system_prompt(guide, mode, duration)},
+-        {"role": "system", "content": given or system_prompt(guide, mode, duration)},
 -        {"role": "user", "content": user_prompt(mode, prompt, resolution, duration, references)},
-+        {"role": "system", "content": system_prompt(guide, mode, duration, language)},
++        {"role": "system", "content": given or system_prompt(guide, mode, duration, language)},
++        # The task message is not replaced, so the language line survives a
++        # system prompt written for another model: a guide aimed at LTX or Krea
++        # has no opinion about which language the answer comes back in.
 +        {
 +            "role": "user",
 +            "content": user_prompt(mode, prompt, resolution, duration, references, language),
@@ -380,10 +383,10 @@ index cfc4403..d5815b9 100644
  
  
 diff --git a/minimax_h3_rewriter/multi_caption.py b/minimax_h3_rewriter/multi_caption.py
-index e535dfa..54bd7f1 100644
+index d4fbd93..1ec5332 100644
 --- a/minimax_h3_rewriter/multi_caption.py
 +++ b/minimax_h3_rewriter/multi_caption.py
-@@ -30,26 +30,33 @@ its nodes, so an old install loses this node alone instead of all of them.
+@@ -30,14 +30,18 @@ its nodes, so an old install loses this node alone instead of all of them.
  from __future__ import annotations
  
  import json
@@ -397,18 +400,12 @@ index e535dfa..54bd7f1 100644
 +from .constants import DEFAULT_OUTPUT_LANGUAGE, OUTPUT_LANGUAGE_NAMES
  from .nodes import (
      BYPASS_CAPTION_TOOLTIP,
-+    EMPTY_CAPTION_HINT,
-     CAPTION_INSTRUCTIONS,
 +    CAPTION_LANGUAGE_TOOLTIP,
++    EMPTY_CAPTION_HINT,
      CAPTION_LENGTHS,
      CATEGORY,
      DEFAULT_OPTIONS,
-     OPTIONS_TYPE,
-     _ensure_pair,
-     _resolve_captioner_choice,
-+    caption_language_clause,
-     captioner_choices,
-     next_index,
+@@ -52,6 +56,8 @@ from .nodes import (
  )
  from .progress import NodeProgress
  
@@ -417,7 +414,7 @@ index e535dfa..54bd7f1 100644
  
  @dataclass(frozen=True)
  class Group:
-@@ -308,6 +315,13 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
+@@ -311,6 +317,13 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
                      optional=True,
                      tooltip=BYPASS_CAPTION_TOOLTIP,
                  ),
@@ -428,10 +425,10 @@ index e535dfa..54bd7f1 100644
 +                    optional=True,
 +                    tooltip=CAPTION_LANGUAGE_TOOLTIP,
 +                ),
-             ],
-             outputs=[
-                 io.String.Output(display_name="reference_assets"),
-@@ -333,6 +347,7 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
+                 io.String.Input(
+                     "reference_instructions",
+                     default="{}",
+@@ -343,6 +356,7 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
          max_frames=media.DEFAULT_MAX_FRAMES,
          context_size=mtmd_engine.CONTEXT_FROM_MODEL,
          bypass=False,
@@ -439,7 +436,7 @@ index e535dfa..54bd7f1 100644
      ) -> io.NodeOutput:
          progress = NodeProgress(cls.hidden.unique_id)
          block = (previous or "").strip()
-@@ -380,6 +395,7 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
+@@ -392,6 +406,7 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
  
          progress.set_total(len(assets))
          captions = []
@@ -447,19 +444,18 @@ index e535dfa..54bd7f1 100644
          for done, asset in enumerate(assets):
              index = next_index(block, asset.role)
              frames = asset.kind == "video" and _is_frames(asset.value)
-@@ -388,7 +404,10 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
+@@ -400,7 +415,9 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
                  f"{asset.role} {index}: reading {asset.slot} ({done + 1} of {len(assets)})",
              )
  
--            asked = f"{CAPTION_INSTRUCTIONS[asset.role]} {CAPTION_LENGTHS[length]}"
-+            asked = (
-+                f"{CAPTION_INSTRUCTIONS[asset.role]} {CAPTION_LENGTHS[length]}"
-+                f"{caption_language_clause(caption_language)}"
+-            asked = caption_question(asset.role, length, asked_for.get(asset.slot))
++            asked = caption_question(
++                asset.role, length, asked_for.get(asset.slot), caption_language
 +            )
              as_image = asset.value if asset.kind == "image" or frames else None
              as_audio = asset.value if asset.kind == "audio" else None
              as_video = None if frames else (asset.value if asset.kind == "video" else None)
-@@ -429,10 +448,24 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
+@@ -441,10 +458,24 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
                  )
  
              caption = " ".join(caption.split())
@@ -486,10 +482,10 @@ index e535dfa..54bd7f1 100644
          return io.NodeOutput(block, "\n".join(captions))
  
 diff --git a/minimax_h3_rewriter/nodes.py b/minimax_h3_rewriter/nodes.py
-index bf9e5ce..3e156b6 100644
+index 7ed9954..65037f0 100644
 --- a/minimax_h3_rewriter/nodes.py
 +++ b/minimax_h3_rewriter/nodes.py
-@@ -30,16 +30,20 @@ from .constants import (
+@@ -31,17 +31,21 @@ from .constants import (
      ATTN_IMPLEMENTATIONS,
      BASE_MODEL_REPO,
      BASE_SKIP_SUFFIXES,
@@ -498,6 +494,7 @@ index bf9e5ce..3e156b6 100644
      DURATION_MIN,
 +    ENGLISH_OUTPUT_LANGUAGE,
      GGUF_RUNTIMES,
+     NO_REASONING,
      OUTPUT_FIELDS,
 +    OUTPUT_LANGUAGE_NAMES,
      QUANTIZATIONS,
@@ -510,7 +507,7 @@ index bf9e5ce..3e156b6 100644
  )
  from .fields import missing, split_fields, split_sections
  from .paths import (
-@@ -840,6 +844,7 @@ def rewrite_t2va(
+@@ -856,6 +860,7 @@ def rewrite_t2va(
      keep_loaded: bool,
      settings: dict,
      progress: NodeProgress,
@@ -518,7 +515,7 @@ index bf9e5ce..3e156b6 100644
  ) -> str:
      """Run the 27B T2VA adapter and return the rewrite, whichever shape the base is.
  
-@@ -852,7 +857,7 @@ def rewrite_t2va(
+@@ -868,7 +873,7 @@ def rewrite_t2va(
      choice = _resolve_model_choice(model)
  
      decoding = {
@@ -527,7 +524,7 @@ index bf9e5ce..3e156b6 100644
          "seed": int(seed),
          "greedy": greedy,
          "max_new_tokens": int(settings["max_new_tokens"]),
-@@ -1005,6 +1010,7 @@ class MiniMaxH3PromptRewriter:
+@@ -1021,6 +1026,7 @@ class MiniMaxH3PromptRewriter:
              "optional": {
                  "options": (OPTIONS_TYPE,),
                  "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_TOOLTIP}),
@@ -535,7 +532,7 @@ index bf9e5ce..3e156b6 100644
              },
              "hidden": {"unique_id": "UNIQUE_ID"},
          }
-@@ -1026,6 +1032,7 @@ class MiniMaxH3PromptRewriter:
+@@ -1042,6 +1048,7 @@ class MiniMaxH3PromptRewriter:
          keep_model_loaded,
          options=None,
          bypass=False,
@@ -543,7 +540,7 @@ index bf9e5ce..3e156b6 100644
          unique_id=None,
      ):
          if bypass:
-@@ -1042,6 +1049,7 @@ class MiniMaxH3PromptRewriter:
+@@ -1058,6 +1065,7 @@ class MiniMaxH3PromptRewriter:
          text = rewrite_t2va(
              model, prompt, resolution, duration, quantization,
              greedy, seed, keep_model_loaded, settings, progress,
@@ -551,7 +548,7 @@ index bf9e5ce..3e156b6 100644
          )
  
          fields = split_fields(text)
-@@ -1062,6 +1070,31 @@ REFERENCE_ASSETS_PLACEHOLDER = (
+@@ -1078,6 +1086,31 @@ REFERENCE_ASSETS_PLACEHOLDER = (
  )
  
  
@@ -583,77 +580,80 @@ index bf9e5ce..3e156b6 100644
  def _guided_text(
      mode: str,
      model: str,
-@@ -1074,6 +1107,7 @@ def _guided_text(
+@@ -1090,6 +1123,7 @@ def _guided_text(
      keep_model_loaded: bool,
      settings: dict,
      progress: NodeProgress,
 +    language: str = DEFAULT_OUTPUT_LANGUAGE,
+     system_prompt: str = "",
  ) -> str:
-     """Run one guided rewrite and return the model's raw answer."""
-     choice = _resolve_writer_choice(model)
-@@ -1094,7 +1128,7 @@ def _guided_text(
+     """Run one guided rewrite and return the model's raw answer.
+@@ -1118,7 +1152,7 @@ def _guided_text(
          guide_prompt.GUIDE_FOR_MODE[mode], settings["auto_download"], progress
      )
      messages = guide_prompt.build_messages(
--        guide, mode, prompt, resolution, duration, references
-+        guide, mode, prompt, resolution, duration, references, language
+-        guide, mode, prompt, resolution, duration, references, system=given
++        guide, mode, prompt, resolution, duration, references, language, system=given
      )
  
      max_new_tokens = int(settings["max_new_tokens"])
-@@ -1268,6 +1302,10 @@ class MiniMaxH3GuidedWriter:
+@@ -1292,6 +1326,11 @@ class MiniMaxH3GuidedWriter:
                  ),
                  "options": (OPTIONS_TYPE,),
                  "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_TOOLTIP}),
 +                # Appended rather than slotted in beside 'task': ComfyUI stores widget
 +                # values positionally, so a new widget anywhere but the end shifts every
-+                # value in workflows saved before it existed.
++                # value in workflows saved before it existed. 'output_language' is the
++                # older of the two here, so it keeps the earlier slot.
 +                "output_language": _language_widget(),
-             },
-             "hidden": {"unique_id": "UNIQUE_ID"},
-         }
-@@ -1290,6 +1328,7 @@ class MiniMaxH3GuidedWriter:
-         reference_material="",
+                 "system_prompt": (
+                     "STRING",
+                     {"multiline": True, "default": "", "tooltip": SYSTEM_PROMPT_TOOLTIP},
+@@ -1319,6 +1358,7 @@ class MiniMaxH3GuidedWriter:
+         system_prompt="",
          options=None,
          bypass=False,
 +        output_language=DEFAULT_OUTPUT_LANGUAGE,
          unique_id=None,
      ):
          if bypass:
-@@ -1302,7 +1341,7 @@ class MiniMaxH3GuidedWriter:
+@@ -1331,7 +1371,8 @@ class MiniMaxH3GuidedWriter:
  
          text = _guided_text(
              task, model, prompt, resolution, duration, reference_material,
--            greedy, seed, keep_model_loaded, settings, progress,
+-            greedy, seed, keep_model_loaded, settings, progress, system_prompt,
 +            greedy, seed, keep_model_loaded, settings, progress, output_language,
++            system_prompt,
          )
          _head, sections = split_sections(text, OUTPUT_FIELDS)
          _report(progress, text, sections, OUTPUT_FIELDS)
-@@ -1396,6 +1435,7 @@ class MiniMaxH3GuidedWriterRef:
+@@ -1425,6 +1466,7 @@ class MiniMaxH3GuidedWriterRef:
              "optional": {
                  "options": (OPTIONS_TYPE,),
                  "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_TOOLTIP}),
 +                "output_language": _language_widget(),
-             },
-             "hidden": {"unique_id": "UNIQUE_ID"},
-         }
-@@ -1417,6 +1457,7 @@ class MiniMaxH3GuidedWriterRef:
-         keep_model_loaded,
+                 "system_prompt": (
+                     "STRING",
+                     {"multiline": True, "default": "", "tooltip": SYSTEM_PROMPT_TOOLTIP},
+@@ -1451,6 +1493,7 @@ class MiniMaxH3GuidedWriterRef:
+         system_prompt="",
          options=None,
          bypass=False,
 +        output_language=DEFAULT_OUTPUT_LANGUAGE,
          unique_id=None,
      ):
          if bypass:
-@@ -1429,7 +1470,7 @@ class MiniMaxH3GuidedWriterRef:
+@@ -1463,7 +1506,8 @@ class MiniMaxH3GuidedWriterRef:
  
          text = _guided_text(
              guide_prompt.REF_MODE, model, prompt, resolution, duration, reference_assets,
--            greedy, seed, keep_model_loaded, settings, progress,
+-            greedy, seed, keep_model_loaded, settings, progress, system_prompt,
 +            greedy, seed, keep_model_loaded, settings, progress, output_language,
++            system_prompt,
          )
          _head, sections = split_sections(text, REF_OUTPUT_FIELDS, fallback="detailed_description")
          _report(progress, text, sections, REF_OUTPUT_FIELDS)
-@@ -1529,6 +1570,7 @@ class MiniMaxH3GuidePrompt:
+@@ -1563,6 +1607,7 @@ class MiniMaxH3GuidePrompt:
                          ),
                      },
                  ),
@@ -661,7 +661,7 @@ index bf9e5ce..3e156b6 100644
              },
              "hidden": {"unique_id": "UNIQUE_ID"},
          }
-@@ -1547,12 +1589,13 @@ class MiniMaxH3GuidePrompt:
+@@ -1581,12 +1626,13 @@ class MiniMaxH3GuidePrompt:
          reference_material="",
          auto_download=True,
          format="plain",
@@ -676,7 +676,7 @@ index bf9e5ce..3e156b6 100644
          )
          system, user = messages[0]["content"], messages[1]["content"]
          joined = single_prompt(system, user, format)
-@@ -1589,6 +1632,27 @@ CAPTION_INSTRUCTIONS = {
+@@ -1623,6 +1669,27 @@ CAPTION_INSTRUCTIONS = {
      ),
  }
  
@@ -704,13 +704,43 @@ index bf9e5ce..3e156b6 100644
  CAPTION_LENGTHS = {
      "brief": "Answer in one sentence.",
      "standard": "Answer in two or three sentences.",
-@@ -1597,6 +1661,17 @@ CAPTION_LENGTHS = {
+@@ -1685,7 +1752,12 @@ def slot_instructions(raw: str) -> dict[str, Question]:
+     return found
+ 
+ 
+-def caption_question(role: str, length: str, question: Question | None = None) -> str:
++def caption_question(
++    role: str,
++    length: str,
++    question: Question | None = None,
++    language: str = ENGLISH_OUTPUT_LANGUAGE,
++) -> str:
+     """What one asset is actually asked, in the one place all three nodes share.
+ 
+     Both halves of this were learned the same way, from two instructions that
+@@ -1705,15 +1777,30 @@ def caption_question(role: str, length: str, question: Question | None = None) -
+     """
+     stock = CAPTION_INSTRUCTIONS[role]
+     length_line = CAPTION_LENGTHS[length]
++    # The language clause rides with the question rather than with the length
++    # preset, so a replacement question -- which drops the preset -- still gets
++    # answered in the language the node was set to.
++    tongue = caption_language_clause(language)
+     if question is None or not question.text:
+-        return f"{stock} {length_line} {NO_REASONING}"
++        return f"{stock} {length_line}{tongue} {NO_REASONING}"
+     if question.add:
+-        return f"{stock} {question.text} {length_line} {NO_REASONING}"
+-    return f"{question.text} {NO_REASONING}"
++        return f"{stock} {question.text} {length_line}{tongue} {NO_REASONING}"
++    return f"{question.text}{tongue} {NO_REASONING}"
+ 
  
  _ASSET_LINE = re.compile(r"^[ \t]*(Subject|Picture|Video|Audio)[ \t]+(\d+)[ \t]*:", re.IGNORECASE | re.MULTILINE)
  
 +#: What is left when a reasoning model spends the whole budget inside its
 +#: ``<think>`` block and the answer is cut off before it starts. The reasoning
-+#: is dropped rather than shipped (see :func:`fields.answer_only`), so nothing
++#: is dropped rather than shipped (see :func:`constants.answer_only`), so nothing
 +#: comes back -- and a label with no description behind it is worse than no
 +#: label, because the writer downstream would read it as a real reference.
 +EMPTY_CAPTION_HINT = (
@@ -722,7 +752,7 @@ index bf9e5ce..3e156b6 100644
  
  def next_index(previous: str, role: str) -> int:
      """The next free number for this role, counted within its own category.
-@@ -1703,6 +1778,7 @@ class MiniMaxH3ReferenceCaption:
+@@ -1820,6 +1907,7 @@ class MiniMaxH3ReferenceCaption:
                          "tooltip": "Override what the model is asked. Empty uses the role's own question.",
                      },
                  ),
@@ -730,7 +760,7 @@ index bf9e5ce..3e156b6 100644
                  "max_frames": (
                      "INT",
                      {
-@@ -1755,6 +1831,7 @@ class MiniMaxH3ReferenceCaption:
+@@ -1872,6 +1960,7 @@ class MiniMaxH3ReferenceCaption:
          previous="",
          description="",
          instruction="",
@@ -738,16 +768,18 @@ index bf9e5ce..3e156b6 100644
          max_frames=media.DEFAULT_MAX_FRAMES,
          context_size=mtmd_engine.CONTEXT_FROM_MODEL,
          options=None,
-@@ -1778,7 +1855,7 @@ class MiniMaxH3ReferenceCaption:
+@@ -1895,7 +1984,9 @@ class MiniMaxH3ReferenceCaption:
                      f"or type the description into 'description'."
                  )
-             asked = (instruction or "").strip() or CAPTION_INSTRUCTIONS[role]
--            asked = f"{asked} {CAPTION_LENGTHS[length]}"
-+            asked = f"{asked} {CAPTION_LENGTHS[length]}{caption_language_clause(caption_language)}"
+             typed = (instruction or "").strip()
+-            asked = caption_question(role, length, Question(typed, add=False) if typed else None)
++            asked = caption_question(
++                role, length, Question(typed, add=False) if typed else None, caption_language
++            )
  
              if clip is not None:
                  kinds = set()
-@@ -1846,6 +1923,8 @@ class MiniMaxH3ReferenceCaption:
+@@ -1963,6 +2054,8 @@ class MiniMaxH3ReferenceCaption:
                  )
  
          caption = " ".join(caption.split())
@@ -911,8 +943,103 @@ index 29319d3..6c369d9 100644
          {"role": "user", "content": user_content},
      ]
  
+diff --git a/minimax_h3_rewriter/prompt_template_omni.py b/minimax_h3_rewriter/prompt_template_omni.py
+index 6cf8a66..e034d98 100644
+--- a/minimax_h3_rewriter/prompt_template_omni.py
++++ b/minimax_h3_rewriter/prompt_template_omni.py
+@@ -27,6 +27,13 @@ from __future__ import annotations
+ import math
+ from decimal import ROUND_HALF_UP, Decimal
+ 
++from .constants import (
++    DEFAULT_OUTPUT_LANGUAGE,
++    ENGLISH_OUTPUT_LANGUAGE,
++    language_name,
++    language_tag,
++)
++
+ TASK_ALIASES = {
+     "t2v": "t2av",
+     "t2va": "t2av",
+@@ -280,9 +287,56 @@ def normalize_task(task: str | None) -> str:
+     return normalized
+ 
+ 
+-def system_prompt_for(task: str) -> str:
+-    """The system prompt this task was trained with."""
+-    return REF_SYSTEM_PROMPT if normalize_task(task) == REF_TASK else SYSTEM_PROMPT
++#: The prose fields of each mode, named so the language bullets can overrule the
++#: "Write all ... in English" line by pointing at the same fields it does.
++PROSE_FIELDS = {
++    False: (
++        "integrated_multimodal_description, overall_soundscape and non_diegetic_music"
++    ),
++    True: (
++        "subject_definitions, summary, retention_analysis, detailed_description, "
++        "overall_soundscape and non_diegetic_music"
++    ),
++}
++
++
++def language_clause(task: str, language: str = DEFAULT_OUTPUT_LANGUAGE) -> str:
++    """The bullets appended to the trained system prompt, empty for English.
++
++    The same three-part shape the 8B adapter is given, because the failure is the
++    same one: the trained prompt says "Write all sections in English" in its own
++    words, so asking for another language without naming that line back leaves
++    the model with two instructions and no ordering between them. Structure stays
++    English because the parser downstream reads the field names, and dialogue
++    stays verbatim because the guide already says so.
++    """
++    if language == ENGLISH_OUTPUT_LANGUAGE:
++        return ""
++    name = language_name(language)
++    tag = language_tag(language)
++    fields = PROSE_FIELDS[normalize_task(task) == REF_TASK]
++    return (
++        f"\n- Write all prose in {name}, not English. This overrides every instruction "
++        f"above that asks for English prose, including \"Write all descriptive sections "
++        f"in English\" and \"Write all six sections in English\". It applies to "
++        f"{fields} alike.\n"
++        f"- Structure is not prose and is never translated. Keep in English exactly as "
++        f"specified above: the field names and their colons, [Shot N] markers, timestamps "
++        f"such as 00:03.500, the tags <d>, <scenetrans> and <cutoff>, speaker IDs such as "
++        f"(S1), the reference labels <Subject N>, <Picture N>, <Video N> and <Audio N>, "
++        f"and the alignment first line. Use ASCII colons and brackets, never full-width "
++        f"ones.\n"
++        f"- Dialogue, lyrics and on-screen text keep the user's original wording and "
++        f"punctuation verbatim. Set the <d> language tag to the language actually spoken, "
++        f"so a spoken {name} line is written <d>[{tag}] ...</d> rather than "
++        f"<d>[English] ...</d>."
++    )
++
++
++def system_prompt_for(task: str, language: str = DEFAULT_OUTPUT_LANGUAGE) -> str:
++    """The system prompt this task was trained with, plus the language bullets."""
++    trained = REF_SYSTEM_PROMPT if normalize_task(task) == REF_TASK else SYSTEM_PROMPT
++    return trained + language_clause(task, language)
+ 
+ 
+ def effective_duration(seconds: float) -> tuple[int, float]:
+@@ -351,6 +405,7 @@ def build_messages(
+     resolution: str = "16:9",
+     duration: float = 10.0,
+     kinds: tuple[str, ...] = (),
++    language: str = DEFAULT_OUTPUT_LANGUAGE,
+ ) -> list[dict]:
+     """The system and user messages this adapter expects.
+ 
+@@ -377,7 +432,7 @@ def build_messages(
+     })
+ 
+     return [
+-        {"role": "system", "content": system_prompt_for(task)},
++        {"role": "system", "content": system_prompt_for(task, language)},
+         {"role": "user", "content": content},
+     ]
+ 
 diff --git a/minimax_h3_rewriter/universal.py b/minimax_h3_rewriter/universal.py
-index 33b9a40..ca03e4d 100644
+index cdbac1d..ecbb493 100644
 --- a/minimax_h3_rewriter/universal.py
 +++ b/minimax_h3_rewriter/universal.py
 @@ -35,7 +35,13 @@ from dataclasses import dataclass
@@ -931,14 +1058,14 @@ index 33b9a40..ca03e4d 100644
  from .nodes import (
      BYPASS_TOOLTIP,
 @@ -44,6 +50,7 @@ from .nodes import (
-     CATEGORY,
      DEFAULT_OPTIONS,
+     INSTRUCTIONS_TOOLTIP,
      OPTIONS_TYPE,
 +    OUTPUT_LANGUAGE_TOOLTIP,
+     SYSTEM_PROMPT_TOOLTIP,
      _ensure_pair,
      _guided_text,
-     _report,
-@@ -435,6 +442,13 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
+@@ -438,6 +445,13 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
                      optional=True,
                      tooltip=BYPASS_TOOLTIP,
                  ),
@@ -949,10 +1076,10 @@ index 33b9a40..ca03e4d 100644
 +                    optional=True,
 +                    tooltip=OUTPUT_LANGUAGE_TOOLTIP,
 +                ),
-             ],
-             outputs=[
-                 io.String.Output(display_name="rewritten_prompt"),
-@@ -466,6 +480,7 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
+                 io.String.Input(
+                     "reference_instructions",
+                     default="{}",
+@@ -484,6 +498,7 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
          max_frames=media.DEFAULT_MAX_FRAMES,
          context_size=mtmd_engine.CONTEXT_FROM_MODEL,
          bypass=False,
@@ -960,22 +1087,23 @@ index 33b9a40..ca03e4d 100644
      ) -> io.NodeOutput:
          progress = NodeProgress(cls.hidden.unique_id)
          block = (previous or "").strip()
-@@ -587,7 +602,7 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
+@@ -609,7 +624,8 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
          material = "" if task == TEXT_TASK else block
          text = _guided_text(
              task, writer_model, prompt, resolution, duration, material,
--            greedy, seed, keep_model_loaded, settings, progress,
+-            greedy, seed, keep_model_loaded, settings, progress, system_prompt,
 +            greedy, seed, keep_model_loaded, settings, progress, output_language,
++            system_prompt,
          )
  
          names = guide_prompt.FIELDS_FOR_MODE[task]
 diff --git a/minimax_h3_rewriter/universal_rewriter.py b/minimax_h3_rewriter/universal_rewriter.py
-index ea986e9..a8c0166 100644
+index 4dc693c..20c6e00 100644
 --- a/minimax_h3_rewriter/universal_rewriter.py
 +++ b/minimax_h3_rewriter/universal_rewriter.py
-@@ -42,9 +42,11 @@ from comfy_api.latest import io
+@@ -57,9 +57,11 @@ from comfy_api.latest import io
  
- from . import writer_8b
+ from . import writer_8b, writer_omni
  from .constants import (
 +    DEFAULT_OUTPUT_LANGUAGE,
      DURATION_MAX,
@@ -983,9 +1111,9 @@ index ea986e9..a8c0166 100644
      OUTPUT_FIELDS,
 +    OUTPUT_LANGUAGE_NAMES,
      QUANTIZATIONS,
+     REF_OUTPUT_FIELDS,
      RESOLUTIONS,
- )
-@@ -55,6 +57,7 @@ from .nodes import (
+@@ -71,6 +73,7 @@ from .nodes import (
      BYPASS_TOOLTIP,
      CATEGORY,
      DEFAULT_OPTIONS,
@@ -993,7 +1121,7 @@ index ea986e9..a8c0166 100644
      OPTIONS_TYPE,
      model_choices,
      rewrite_t2va,
-@@ -269,6 +272,13 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
+@@ -409,6 +412,13 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
                      optional=True,
                      tooltip=BYPASS_TOOLTIP,
                  ),
@@ -1004,35 +1132,42 @@ index ea986e9..a8c0166 100644
 +                    optional=True,
 +                    tooltip=LORA_LANGUAGE_TOOLTIP,
 +                ),
-             ],
-             outputs=[
-                 io.String.Output(display_name="rewritten_prompt"),
-@@ -297,6 +307,7 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
+                 io.Combo.Input(
+                     "model_omni",
+                     options=writer_omni.model_choices(),
+@@ -460,6 +470,7 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
          frame_switches="{}",
          options=None,
          bypass=False,
 +        output_language=DEFAULT_OUTPUT_LANGUAGE,
-     ) -> io.NodeOutput:
-         progress = NodeProgress(cls.hidden.unique_id)
-         empty = ("",) * len(OUTPUT_FIELDS)
-@@ -319,6 +330,7 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
+         model_omni="",
+         quantization_omni="nf4",
+         reference_video=None,
+@@ -515,12 +526,14 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
+                 settings=settings,
+                 progress=progress,
+                 references=omni_references(task, connected),
++                language=output_language,
+             )
+         elif lora == LORA_8B:
+             text = writer_8b.rewrite_8b(
                  model_8b, prompt, task, resolution, duration, quantization_8b,
                  greedy, seed, keep_model_loaded, settings, progress,
                  frames.get("first_frame"), frames.get("last_frame"),
 +                output_language,
              )
-         else:
-             if task != TEXT_TASK or frames:
-@@ -340,6 +352,7 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
+             if heard:
+                 _unread(progress, heard, "the 8B LoRA has neither ear nor a clip task")
+@@ -545,6 +558,7 @@ class MiniMaxH3UniversalRewriter(io.ComfyNode):
              text = rewrite_t2va(
                  model_27b, prompt, resolution, duration, quantization_27b,
                  greedy, seed, keep_model_loaded, settings, progress,
 +                output_language,
              )
  
-         fields = split_fields(text)
+         fields = split_fields(text, FIELDS_FOR_TASK[task], BODY_FIELD[task])
 diff --git a/minimax_h3_rewriter/writer_8b.py b/minimax_h3_rewriter/writer_8b.py
-index ea7831d..6856b19 100644
+index 48ce5f3..d2ba91e 100644
 --- a/minimax_h3_rewriter/writer_8b.py
 +++ b/minimax_h3_rewriter/writer_8b.py
 @@ -31,6 +31,7 @@ from dataclasses import dataclass
@@ -1058,7 +1193,7 @@ index ea7831d..6856b19 100644
      _refuse_problem,
      _resolve_adapter,
      _verify_base_model,
-@@ -247,6 +250,7 @@ def _with_transformers(
+@@ -251,6 +254,7 @@ def _with_transformers(
      greedy: bool,
      keep_loaded: bool,
      progress: NodeProgress,
@@ -1066,7 +1201,7 @@ index ea7831d..6856b19 100644
  ) -> str:
      """The safetensors route: one process, the pictures handed over in memory.
  
-@@ -286,7 +290,7 @@ def _with_transformers(
+@@ -290,7 +294,7 @@ def _with_transformers(
          progress=progress,
          trust_remote_code=bool(settings.get("trust_remote_code", False)),
          images=images or None,
@@ -1075,7 +1210,7 @@ index ea7831d..6856b19 100644
          seed=int(seed),
          greedy=greedy,
          max_new_tokens=int(settings["max_new_tokens"]),
-@@ -348,6 +352,7 @@ def rewrite_8b(
+@@ -355,6 +359,7 @@ def rewrite_8b(
      progress: NodeProgress,
      first_frame=None,
      last_frame=None,
@@ -1083,7 +1218,7 @@ index ea7831d..6856b19 100644
  ) -> str:
      """Run the 8B adapter and return the rewrite, on whichever of the three engines fits.
  
-@@ -362,7 +367,7 @@ def rewrite_8b(
+@@ -369,7 +374,7 @@ def rewrite_8b(
      if choice.fmt == FORMAT_TRANSFORMERS:
          return _with_transformers(
              choice, frames, prompt, wanted, resolution, int(duration),
@@ -1092,7 +1227,7 @@ index ea7831d..6856b19 100644
          )
  
      if choice.local:
-@@ -388,7 +393,9 @@ def rewrite_8b(
+@@ -395,7 +400,9 @@ def rewrite_8b(
              catalog.ADAPTERS_8B,
          )
  
@@ -1103,7 +1238,7 @@ index ea7831d..6856b19 100644
  
      if frames:
          return _with_frames(
-@@ -529,6 +536,7 @@ class MiniMaxH3PromptWriter8B:
+@@ -536,6 +543,7 @@ class MiniMaxH3PromptWriter8B:
                  "last_frame": ("IMAGE", {"tooltip": FRAME_TOOLTIPS["last_frame"]}),
                  "options": (OPTIONS_TYPE,),
                  "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_TOOLTIP}),
@@ -1111,7 +1246,7 @@ index ea7831d..6856b19 100644
              },
              "hidden": {"unique_id": "UNIQUE_ID"},
          }
-@@ -553,6 +561,7 @@ class MiniMaxH3PromptWriter8B:
+@@ -560,6 +568,7 @@ class MiniMaxH3PromptWriter8B:
          last_frame=None,
          options=None,
          bypass=False,
@@ -1119,7 +1254,7 @@ index ea7831d..6856b19 100644
          unique_id=None,
      ):
          if bypass:
-@@ -569,7 +578,7 @@ class MiniMaxH3PromptWriter8B:
+@@ -576,7 +585,7 @@ class MiniMaxH3PromptWriter8B:
          text = rewrite_8b(
              model, prompt, task, resolution, duration, quantization,
              greedy, seed, keep_model_loaded, settings, progress,
@@ -1128,3 +1263,102 @@ index ea7831d..6856b19 100644
          )
  
          fields = split_fields(text)
+diff --git a/minimax_h3_rewriter/writer_omni.py b/minimax_h3_rewriter/writer_omni.py
+index 5076bd3..429b5c7 100644
+--- a/minimax_h3_rewriter/writer_omni.py
++++ b/minimax_h3_rewriter/writer_omni.py
+@@ -38,9 +38,11 @@ from comfy_api.latest import io
+ from . import catalog, discovery, engine, media, mtmd_engine
+ from .catalog import FORMAT_GGUF, FORMAT_TRANSFORMERS
+ from .constants import (
++    DEFAULT_OUTPUT_LANGUAGE,
+     DURATION_MAX,
+     DURATION_MIN,
+     OUTPUT_FIELDS,
++    OUTPUT_LANGUAGE_NAMES,
+     QUANTIZATIONS,
+     REF_OUTPUT_FIELDS,
+     RESOLUTIONS,
+@@ -52,6 +54,7 @@ from .nodes import (
+     CATEGORY,
+     DEFAULT_OPTIONS,
+     LOCAL_PREFIX,
++    LORA_LANGUAGE_TOOLTIP,
+     OPTIONS_TYPE,
+     _announce,
+     _ensure_pair,
+@@ -284,6 +287,7 @@ def _with_transformers(
+     greedy: bool,
+     keep_loaded: bool,
+     progress: NodeProgress,
++    language: str = DEFAULT_OUTPUT_LANGUAGE,
+ ) -> str:
+     """The safetensors route: one process, the pictures handed over in memory.
+ 
+@@ -333,7 +337,7 @@ def _with_transformers(
+         trust_remote_code=bool(settings.get("trust_remote_code", False)),
+         images=images or None,
+         messages=build_messages(
+-            prompt, task, resolution, duration, tuple(r.kind for r in references)
++            prompt, task, resolution, duration, tuple(r.kind for r in references), language
+         ),
+         seed=int(seed),
+         greedy=greedy,
+@@ -483,6 +487,7 @@ def rewrite_omni(
+     progress: NodeProgress,
+     references: list[Reference] | None = None,
+     max_frames: int = media.DEFAULT_MAX_FRAMES,
++    language: str = DEFAULT_OUTPUT_LANGUAGE,
+ ) -> str:
+     """Run the Omni adapter and return the rewrite, on whichever engine fits.
+ 
+@@ -498,7 +503,7 @@ def rewrite_omni(
+     if choice.fmt == FORMAT_TRANSFORMERS:
+         return _with_transformers(
+             choice, references, prompt, wanted, resolution, float(duration),
+-            quantization, settings, seed, greedy, keep_loaded, progress,
++            quantization, settings, seed, greedy, keep_loaded, progress, language,
+         )
+ 
+     if choice.local:
+@@ -525,7 +530,7 @@ def rewrite_omni(
+         )
+ 
+     messages = build_messages(
+-        prompt, wanted, resolution, float(duration), tuple(r.kind for r in references)
++        prompt, wanted, resolution, float(duration), tuple(r.kind for r in references), language
+     )
+ 
+     if references:
+@@ -719,6 +724,15 @@ class MiniMaxH3PromptWriterOmni(io.ComfyNode):
+                     optional=True,
+                     tooltip=BYPASS_TOOLTIP,
+                 ),
++                # Last, like every widget added after a node shipped: ComfyUI
++                # restores saved values by position.
++                io.Combo.Input(
++                    "output_language",
++                    options=list(OUTPUT_LANGUAGE_NAMES),
++                    default=DEFAULT_OUTPUT_LANGUAGE,
++                    optional=True,
++                    tooltip=LORA_LANGUAGE_TOOLTIP,
++                ),
+             ],
+             outputs=[
+                 io.String.Output(display_name="rewritten_prompt"),
+@@ -744,6 +758,7 @@ class MiniMaxH3PromptWriterOmni(io.ComfyNode):
+         options=None,
+         max_frames=media.DEFAULT_MAX_FRAMES,
+         bypass=False,
++        output_language=DEFAULT_OUTPUT_LANGUAGE,
+     ) -> io.NodeOutput:
+         progress = NodeProgress(cls.hidden.unique_id)
+         empty = ("",) * len(ALL_FIELDS)
+@@ -778,6 +793,7 @@ class MiniMaxH3PromptWriterOmni(io.ComfyNode):
+             progress=progress,
+             references=connected,
+             max_frames=int(max_frames),
++            language=output_language,
+         )
+ 
+         names = FIELDS_FOR_TASK[wanted]
