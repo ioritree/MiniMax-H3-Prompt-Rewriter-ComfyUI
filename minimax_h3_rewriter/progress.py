@@ -9,10 +9,57 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import NoReturn
 
 log = logging.getLogger(__name__)
 
 TEXT_MIN_INTERVAL = 0.25
+
+NOTICES_EVENT = "minimax_h3_rewriter.notices"
+
+
+def refuse(node_id, message: str) -> NoReturn:
+    """Say it on screen, then raise it.
+
+    A node that stops has to say why twice over. The exception is the truthful
+    half -- it stops the run and lands in the console with a traceback -- but a
+    traceback is not where anyone looks first, and ComfyUI's own error panel is
+    easy to close without reading. The toast is the same sentence, in the same
+    place the self-check speaks from, before the exception goes up.
+    """
+    announce(node_id, [("warn", message)], kind="refusal")
+    raise ValueError(message)
+
+
+def announce(node_id, findings, kind: str = "notice") -> None:
+    """Hand findings to the frontend, which shows them as a toast.
+
+    The caption under a node holds the full story, but it is a few lines tall
+    and the person is usually watching the other end of the graph; the toast
+    is what makes a finding impossible to miss. ``findings`` is a list of
+    ``(level, message)`` pairs or of objects carrying ``level`` and
+    ``message`` -- the self-check's Issue is one. ``kind`` names the toast:
+    ``check`` for the self-check's reading of an answer, ``refusal`` for a
+    run that is being stopped, ``notice`` for the nodes' own warnings. Fire-and-forget: a frontend that is not listening
+    loses nothing but the toast.
+    """
+    if node_id is None or not findings:
+        return
+    issues = []
+    for entry in findings:
+        if isinstance(entry, (tuple, list)):
+            level, message = entry
+        else:
+            level, message = entry.level, entry.message
+        issues.append({"level": str(level), "message": str(message)})
+    try:
+        from server import PromptServer
+
+        PromptServer.instance.send_sync(
+            NOTICES_EVENT, {"node": str(node_id), "kind": kind, "issues": issues}
+        )
+    except Exception:
+        log.debug("[minimax_h3_rewriter.progress] could not announce the findings", exc_info=True)
 
 
 def format_size(num_bytes: float) -> str:
@@ -124,6 +171,7 @@ class TransferReporter:
         self.title = title
         self.started_at = time.monotonic()
         self.baseline = None
+        self.transferred = 0
         self.progress.set_total(self.total_bytes)
 
     def set_total(self, total_bytes: int) -> None:
@@ -131,14 +179,13 @@ class TransferReporter:
         self.progress.set_total(self.total_bytes)
 
     def __call__(self, transferred: int, current_name: str) -> None:
+        self.transferred = transferred
         if self.baseline is None:
             self.baseline = transferred
             self.started_at = time.monotonic()
         elapsed = max(time.monotonic() - self.started_at, 1e-6)
         speed = (transferred - self.baseline) / elapsed
         remaining = (self.total_bytes - transferred) / speed if speed > 0 else float("inf")
-        # No percentage here on purpose: the bar beside this caption is showing
-        # exactly that, and printing it twice is what made the pair look noisy.
         caption = (
             f"{self.title}\n"
             f"{current_name}\n"

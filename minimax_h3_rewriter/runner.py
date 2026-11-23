@@ -17,7 +17,9 @@ Four things are load-bearing:
   not going to resume. Either way the node fails with a message instead of
   wedging the ComfyUI queue, which is what a subprocess that never exits does.
 - **No child outlives the interpreter.** Every process started here is
-  registered, and an ``atexit`` hook kills whatever is still holding VRAM.
+  registered, and an ``atexit`` hook kills whatever is still holding VRAM --
+  backed by the operating system, since ``atexit`` only runs on a tidy exit and
+  a crashed ComfyUI would otherwise leave a model resident on the card.
 """
 
 from __future__ import annotations
@@ -61,6 +63,119 @@ def _kill_all() -> None:
 atexit.register(_kill_all)
 
 
+_KILL_ON_JOB_CLOSE = 0x00002000
+_JOB_EXTENDED_LIMIT = 9
+
+_PR_SET_PDEATHSIG = 1
+
+_JOB = None
+_JOB_TRIED = False
+
+
+def _job_handle():
+    """A Windows job object holding every child, created once.
+
+    ``atexit`` is not enough on its own. It runs when the interpreter exits
+    tidily and not when ComfyUI is killed from a task manager, segfaults in a
+    CUDA kernel, or is stopped from the console -- and a llama.cpp child that
+    survives that keeps whole gigabytes of VRAM until someone notices. A
+    one-shot binary exits within seconds and mostly gets away with it; a server
+    started for a caption run does not, so the guarantee is moved to the kernel:
+    the job dies with this process because the last handle to it closes, and
+    everything in the job dies with the job.
+    """
+    global _JOB, _JOB_TRIED
+
+    if _JOB_TRIED:
+        return _JOB
+    _JOB_TRIED = True
+
+    import ctypes
+    from ctypes import wintypes
+
+    class _Limits(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _Counters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+        )]
+
+    class _Extended(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _Limits),
+            ("IoInfo", _Counters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel.CreateJobObjectW(None, None)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        information = _Extended()
+        information.BasicLimitInformation.LimitFlags = _KILL_ON_JOB_CLOSE
+        if not kernel.SetInformationJobObject(
+            handle, _JOB_EXTENDED_LIMIT, ctypes.byref(information),
+            ctypes.sizeof(information),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+    except Exception:
+        log.debug("[minimax_h3_rewriter.runner._job_handle] no job object", exc_info=True)
+        return None
+
+    _JOB = handle
+    return _JOB
+
+
+def _adopt(process: subprocess.Popen) -> None:
+    """Tie a child's lifetime to this process at the operating-system level.
+
+    Best effort by design. Every platform this does not know keeps exactly the
+    behaviour it had before, which is the ``atexit`` hook above: a missing
+    belt is no reason to drop the braces.
+    """
+    if sys.platform != "win32":
+        return
+    job = _job_handle()
+    if not job:
+        return
+    import ctypes
+
+    try:
+        if not ctypes.WinDLL("kernel32", use_last_error=True).AssignProcessToJobObject(
+            job, int(process._handle)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+    except Exception:
+        log.debug("[minimax_h3_rewriter.runner._adopt] not adopted", exc_info=True)
+
+
+def _die_with_parent() -> None:
+    """``preexec_fn`` for the same guarantee on Linux."""
+    try:
+        import ctypes
+        import signal
+
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
+    except Exception:
+        pass
+
+
 class ChildFailed(RuntimeError):
     """The subprocess stalled, crashed, or exited non-zero."""
 
@@ -88,8 +203,12 @@ def free_comfy_vram(device: str = "auto") -> None:
     Making room is right when both models want the same card and actively
     harmful when they do not: on a second GPU, unloading the diffusion model
     costs a full reload after the rewrite and buys nothing.
+
+    ``unload_all_models`` is hooked to release this pack's own models as well
+    (see ``resident.install``), and this is the one caller that must not: it
+    is clearing the card for a model of ours.
     """
-    from . import devices
+    from . import devices, resident
 
     if not devices.shares_comfy_device(device):
         log.info(
@@ -100,7 +219,8 @@ def free_comfy_vram(device: str = "auto") -> None:
     try:
         import comfy.model_management as mm
 
-        mm.unload_all_models()
+        with resident.making_room():
+            mm.unload_all_models()
         mm.soft_empty_cache(force=True)
     except Exception:
         log.debug("[minimax_h3_rewriter.runner.free_comfy_vram] skipped", exc_info=True)
@@ -137,8 +257,10 @@ def spawn(command: list[str], binary: str) -> subprocess.Popen:
         env=environment,
         creationflags=creation,
         bufsize=0,
+        preexec_fn=_die_with_parent if sys.platform.startswith("linux") else None,
     )
     _LIVE.add(process)
+    _adopt(process)
     return process
 
 
@@ -184,7 +306,11 @@ def run(
 
     ``on_text`` is called with the whole text so far every time more arrives, so
     a caller can drive a progress bar and a preview without re-implementing the
-    incremental decode.
+    incremental decode. Returning something truthy from it ends the run and
+    keeps the text written up to that point -- which is how a caller stops a
+    child that has started repeating itself rather than writing. It is not a
+    failure and nothing is raised: the half-answer is the useful half, and the
+    caller is the one that decided to stop.
     """
     log.info("[minimax_h3_rewriter.runner.run] %s", " ".join(command))
 
@@ -202,6 +328,7 @@ def run(
     pieces: list[str] = []
     was_interrupted = False
     finished = False
+    stopped = False
     stalled = ""
     last_output = time.monotonic()
 
@@ -231,8 +358,13 @@ def run(
             if not text:
                 continue
             pieces.append(text)
-            if on_text is not None:
-                on_text("".join(pieces))
+            if on_text is not None and on_text("".join(pieces)):
+                stopped = True
+                log.info(
+                    "[minimax_h3_rewriter.runner.run] %s stopped early by the caller",
+                    os.path.basename(binary),
+                )
+                break
         pieces.append(decoder.decode(b"", final=True))
     finally:
         if was_interrupted or stalled or process.poll() is None:
@@ -254,7 +386,7 @@ def run(
             f"the queue. Last output from it:\n{tail}"
         )
 
-    if process.returncode != 0:
+    if process.returncode != 0 and not stopped:
         tail = "\n".join(stderr_text.splitlines()[-STDERR_TAIL:])
         raise ChildFailed(
             f"{os.path.basename(binary)} exited with code {process.returncode}.\n{tail}"

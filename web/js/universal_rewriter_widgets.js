@@ -3,6 +3,7 @@ import { addSlotSwitches, hideWidget } from "./slot_switches.js";
 import {
     installBaseStyle,
     onRefresh,
+    ratiosHeight,
     renderRatios,
     renderSegments,
     replaceWithDom,
@@ -20,6 +21,8 @@ const LORA = "lora";
 const TASK = "task";
 const RESOLUTION = "resolution";
 const SWITCHES = "frame_switches";
+const SOUND = "sound";
+const SOUND_ROWS = ["reference_video"];
 
 const LORA_27B = "27B LoRA";
 const LORA_8B = "8B LoRA";
@@ -47,9 +50,10 @@ const TAB_TITLE = {
         "Qwen3-VL-8B, four tasks. It looks at the frames you connect and writes the alignment " +
         "line from what it sees.",
     [LORA_OMNI]:
-        "Qwen2.5-Omni-7B, the same four tasks here. It looks at the frames too, and it is the " +
-        "one that hears -- but sound, clips and the six-field Ref2AV task are on the Prompt " +
-        "Rewriter Omni node, which has the strip they need.",
+        "Qwen2.5-Omni-7B, all five tasks. It looks at the frames too, and it is the one that " +
+        "hears: Ref2VA reads the clip and sound rows as well, and the speaker box on " +
+        "reference_video counts the clip's own sound. More than four references, and a strip " +
+        "to order them, are on the Prompt Rewriter Omni node.",
 };
 
 const REF_TASK = "Ref2VA";
@@ -69,7 +73,6 @@ const PREFIXES = ["first_", "last_", "reference_"];
 
 const TABS_H = 34;
 const TASKS_H = 26;
-const RATIOS_H = 38;
 
 const STATE = "__minimaxH3UniversalRewriter";
 
@@ -88,15 +91,36 @@ function isSlotEnabled(node, name) {
     return map[name] === undefined ? true : !!map[name];
 }
 
-function toggleSlot(node, name) {
-    const map = readSwitches(node);
-    map[name] = !isSlotEnabled(node, name);
+function soundRows(map) {
+    return Array.isArray(map[SOUND]) ? map[SOUND].filter((n) => typeof n === "string") : [];
+}
+
+function writeSwitches(node, map, heard) {
     for (const key of Object.keys(map)) {
         if (map[key] !== false) delete map[key];
     }
+    if (heard.length) map[SOUND] = heard;
     const widget = widgetNamed(node, SWITCHES);
     if (widget) widget.value = JSON.stringify(map);
     redraw(node);
+}
+
+function toggleSlot(node, name) {
+    const map = readSwitches(node);
+    const heard = soundRows(map);
+    map[name] = !isSlotEnabled(node, name);
+    writeSwitches(node, map, heard);
+}
+
+function isSoundOn(node, name) {
+    return soundRows(readSwitches(node)).includes(name);
+}
+
+function toggleSound(node, name) {
+    const map = readSwitches(node);
+    const heard = soundRows(map).filter((row) => row !== name);
+    if (!isSoundOn(node, name)) heard.push(name);
+    writeSwitches(node, map, heard);
 }
 
 function frameReady(node, name) {
@@ -228,7 +252,7 @@ function build(node) {
 
     replaceWithDom(node, LORA, "minimaxh3_lora", tabs, () => TABS_H);
     replaceWithDom(node, TASK, "minimaxh3_task", tasks, () => TASKS_H);
-    replaceWithDom(node, RESOLUTION, "minimaxh3_ratio", ratios, () => RATIOS_H);
+    replaceWithDom(node, RESOLUTION, "minimaxh3_ratio", ratios, () => ratiosHeight(node, RESOLUTION));
 
     redraw(node);
 }
@@ -240,6 +264,7 @@ function addControls(nodeType) {
         prefixes: PREFIXES,
         enabled: isSlotEnabled,
         toggle: toggleSlot,
+        sound: { names: SOUND_ROWS, enabled: isSoundOn, toggle: toggleSound },
     });
 }
 

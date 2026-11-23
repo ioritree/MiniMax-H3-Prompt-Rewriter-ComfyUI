@@ -13,17 +13,71 @@ ADAPTER_DIR_NAME = "MiniMax-H3-Prompt-Rewriter-LoRA"
 ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors")
 BASE_SKIP_SUFFIXES = (".md", ".gitattributes")
 
-RESOLUTIONS = ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16")
-DURATION_MIN = 4
-DURATION_MAX = 15
+RESOLUTIONS = ("48:9", "32:9", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16")
+
+DURATION_TYPE = "FLOAT,INT"
+DURATION_MIN = 0.1
+DURATION_DEFAULT = 10.0
+DURATION_STEP = 0.1
+DURATION_CEILING = 600.0
+
+DURATION_LEAD = "Target clip length in seconds; drives shot count and pacing."
+
+DURATION_MENU = (
+    "Right-click the node for 'duration': the default value back, or a new upper end for "
+    "the widget. It offers 30 seconds until you change it and the server takes up to 600, "
+    "because a widget's range is fixed when the node is declared and one number cannot suit "
+    "every graph -- MiniMax's own guide is written around clips of a few seconds, while the "
+    "stretched pipelines the community has built run well past that. What you set is "
+    "remembered with the workflow."
+)
+
+
+def duration_tooltip(lead: str = DURATION_LEAD) -> str:
+    """One node's own sentence about duration, with the menu explained after it."""
+    return f"{lead}\n\n{DURATION_MENU}"
+
+
+DURATION_TOOLTIP = duration_tooltip()
+
+
+def duration_options(tooltip: str = DURATION_TOOLTIP) -> dict:
+    """The duration widget's numbers, shared by both node schemas."""
+    return {
+        "default": DURATION_DEFAULT,
+        "min": DURATION_MIN,
+        "max": DURATION_CEILING,
+        "step": DURATION_STEP,
+        "round": DURATION_STEP,
+        "tooltip": tooltip,
+    }
+
+
+def duration_widget(tooltip: str = DURATION_TOOLTIP) -> tuple:
+    """The v1 declaration: a float widget that an INT link may drive as readily.
+
+    'widgetType' is what tells the frontend which of the two types to draw,
+    since the socket carries both.
+    """
+    return (DURATION_TYPE, {"widgetType": "FLOAT", **duration_options(tooltip)})
+
 
 QUANTIZATIONS = ("nf4", "int8", "bfloat16", "float16")
 ATTN_IMPLEMENTATIONS = ("sdpa", "eager", "flash_attention_2")
+
+MERGE_AUTO = "auto"
+MERGE_ON = "on"
+MERGE_OFF = "off"
+MERGE_LORA = (MERGE_AUTO, MERGE_ON, MERGE_OFF)
 
 RUNTIME_AUTO = "auto"
 RUNTIME_WHEEL = "llama-cpp-python"
 RUNTIME_BINARY = "llama.cpp"
 GGUF_RUNTIMES = (RUNTIME_AUTO, RUNTIME_WHEEL, RUNTIME_BINARY)
+
+DOWNLOADER_BUILTIN = "built-in"
+DOWNLOADER_HUB = "huggingface_hub"
+DOWNLOADERS = (DOWNLOADER_BUILTIN, DOWNLOADER_HUB)
 
 OUTPUT_FIELDS = (
     "integrated_multimodal_description",
@@ -91,9 +145,6 @@ def language_tag(language: str) -> str:
 
 MODELS_SUBDIR = "LLM"
 
-#: transformers' set_seed feeds numpy, whose legacy seeding refuses anything at
-#: or above 2**32; llama.cpp takes a uint32 too. ComfyUI's "randomize" happily
-#: produces 64-bit values, so every seed is folded into this range before use.
 SEED_MODULUS = 2 ** 32
 
 
@@ -105,6 +156,11 @@ THINK_OPEN = "<think>"
 THINK_CLOSE = "</think>"
 
 NO_REASONING = "Do not think out loud: give the answer only, with no reasoning and no preamble."
+
+EMPTY_ANSWER_HINT = (
+    "With 'greedy' on, the same input gets the same nothing every time; turning it "
+    "off, or another writer model, tells whether it is this input or this model."
+)
 
 
 def answer_only(text: str) -> str:

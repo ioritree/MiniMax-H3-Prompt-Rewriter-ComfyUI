@@ -1,12 +1,17 @@
-import { installStyle, refresh, widgetNamed } from "./mmx_controls.js";
+import { graphChanged, installStyle, refresh, widgetNamed } from "./mmx_controls.js";
+import { drawPreview } from "./reference_previews.js";
+import { isRefmodLink, refmodAt } from "./refmods.js";
 
 
 export const CHIP_W = 52;
 export const CHIP_ROLE_H = 18;
+export const CHIP_MEDIA_H = 46;
 export const CHIP_SLOT_H = 16;
 export const CHIP_INSTR_H = 17;
-export const CHIP_H = 78;
+export const CHIP_H = CHIP_ROLE_H + CHIP_MEDIA_H + CHIP_SLOT_H + CHIP_INSTR_H;
 export const CHIP_H_PLAIN = CHIP_H - CHIP_INSTR_H;
+
+const KIND_OF_ROLE = { Picture: "image", Subject: "image", Video: "video", Audio: "audio" };
 export const CHIP_GAP = 4;
 
 export const COLOUR = {
@@ -33,41 +38,67 @@ const STYLE = `
 .mmx-chip-role { flex: 0 0 ${CHIP_ROLE_H}px; font-size: 11px;
     line-height: ${CHIP_ROLE_H}px; text-align: center; letter-spacing: 0.03em;
     color: #fff; background: rgba(0, 0, 0, 0.3); }
-.mmx-chip-num { flex: 1 1 auto; font-size: 15px; text-align: center;
-    line-height: ${CHIP_H - CHIP_ROLE_H - CHIP_SLOT_H - CHIP_INSTR_H - 2}px;
-    font-weight: 600; color: #fff; }
-/* The number says where a square sits in the block, so it renumbers the moment
-   anything moves -- which would make a reorder of two squares of the same kind
-   invisible. The slot it is plugged into is what stays with it. */
+.mmx-chip-role.mmx-heard { background: #8A54C8; font-weight: 600; }
+.mmx-chip-role.mmx-heard.mmx-idle { background: rgba(138, 84, 200, 0.45); font-weight: 400; }
+.mmx-chip-media { flex: 1 1 auto; position: relative; overflow: hidden; }
+.mmx-chip-media > img, .mmx-chip-media > video { position: absolute; inset: 0;
+    display: block; width: 100%; height: 100%; object-fit: cover;
+    pointer-events: none; }
+.mmx-chip-num { position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; font-size: 15px; font-weight: 600; color: #fff;
+    pointer-events: none; }
+.mmx-chip-media.mmx-has .mmx-chip-num { inset: auto 2px 2px auto; min-width: 10px;
+    height: 16px; padding: 0 3px; font-size: 12px; line-height: 16px;
+    border-radius: 8px; background: rgba(0, 0, 0, 0.66); }
+.mmx-chip-icon { position: absolute; left: 2px; top: 2px; width: 11px; height: 11px;
+    pointer-events: none; filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)); }
+.mmx-chip-mod { position: absolute; left: 2px; bottom: 2px; height: 12px; padding: 0 3px;
+    font-size: 8px; line-height: 12px; letter-spacing: 0.04em; border-radius: 3px;
+    color: #fff; background: rgba(0, 0, 0, 0.66); pointer-events: none; }
+.mmx-chip-name { position: absolute; left: 14px; right: 2px; top: 1px;
+    font-size: 8px; line-height: 12px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; color: rgba(255, 255, 255, 0.92);
+    text-shadow: 0 0 2px rgba(0, 0, 0, 0.8); pointer-events: none; }
+.mmx-wave { position: absolute; left: 3px; right: 3px; top: 15px; bottom: 16px;
+    display: flex; align-items: center; gap: 1px; pointer-events: none; }
+.mmx-wave i { flex: 1 1 0; min-height: 1px; border-radius: 1px;
+    background: rgba(255, 255, 255, 0.85); }
+.mmx-chip-media.mmx-playing .mmx-wave i { background: rgba(255, 255, 255, 0.35);
+    transition: background 90ms linear, box-shadow 90ms linear; }
+.mmx-chip-media.mmx-playing .mmx-wave i.mmx-played { background: #fff;
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.9); }
+.mmx-chip-media.mmx-playing .mmx-chip-icon {
+    animation: mmx-speaker 0.45s ease-in-out infinite alternate; }
+@keyframes mmx-speaker { from { transform: scale(1); } to { transform: scale(1.3); } }
+.mmx-listen { position: absolute; left: 0; bottom: 0; width: 0; height: 2px;
+    background: #fff; box-shadow: 0 0 4px rgba(255, 255, 255, 0.9);
+    pointer-events: none; }
 .mmx-chip-slot { flex: 0 0 ${CHIP_SLOT_H}px; font-size: 9px;
     line-height: ${CHIP_SLOT_H}px; text-align: center; letter-spacing: 0.02em;
     color: rgba(255, 255, 255, 0.75); background: rgba(0, 0, 0, 0.22); }
 .mmx-chip.mmx-plain { height: ${CHIP_H_PLAIN}px; }
-.mmx-chip.mmx-plain .mmx-chip-num {
-    line-height: ${CHIP_H_PLAIN - CHIP_ROLE_H - CHIP_SLOT_H - 2}px; }
 .mmx-chip.mmx-off { opacity: 0.35; }
 .mmx-chip.mmx-dragging { cursor: grabbing; transform: scale(1.1);
     box-shadow: 0 3px 10px rgba(0, 0, 0, 0.55); }
 .mmx-strip .mmx-note { line-height: ${CHIP_H}px; }
 
-/* Same colour as the square above it, and unlit until it carries something:
-   an empty band should read as an offer rather than as a setting.
-   border-box, and a line-height a pixel short of the band: the border is part
-   of the height here, and a line exactly as tall as its box loses its descenders
-   to the chip's overflow. */
 .mmx-instr { flex: 0 0 ${CHIP_INSTR_H}px; box-sizing: border-box; font-size: 9px;
     line-height: ${CHIP_INSTR_H - 3}px; text-align: center; letter-spacing: 0.04em;
     cursor: pointer; color: rgba(255, 255, 255, 0.5);
     background: rgba(0, 0, 0, 0.42);
     border-top: 1px solid rgba(0, 0, 0, 0.35); }
 .mmx-instr:hover { color: #fff; background: rgba(255, 255, 255, 0.16); }
-/* Two lit states, because the two modes do opposite things and the operator in
-   front of the word is easy to miss on a 52px square. Added is the softer of
-   the two; instead-of gets the solid band. */
-.mmx-instr.mmx-set { color: #fff; font-weight: 600;
-    background: rgba(255, 255, 255, 0.28); }
-.mmx-instr.mmx-set.mmx-swap { color: #1b1b1b;
-    background: rgba(255, 255, 255, 0.82); }
+.mmx-instr.mmx-set { color: #1b1b1b; font-weight: 700;
+    background: #F5B942; border-top-color: #F5B942; }
+.mmx-instr.mmx-set.mmx-swap { color: #fff; background: #E8590C;
+    border-top-color: #E8590C; }
+.mmx-instr.mmx-set:hover { color: #1b1b1b; background: #FFD37A; }
+.mmx-instr.mmx-set.mmx-swap:hover { color: #fff; background: #FF7A33; }
+.mmx-instr.mmx-set::before { content: ""; display: inline-block; width: 5px;
+    height: 5px; margin-right: 3px; border-radius: 50%; vertical-align: 1px;
+    background: currentColor; }
+.mmx-chip:has(.mmx-instr.mmx-set) { outline: 2px solid #F5B942; outline-offset: -2px; }
+.mmx-chip:has(.mmx-instr.mmx-swap) { outline-color: #E8590C; }
 
 .mmx-ask { position: fixed; z-index: 3000; width: 320px; padding: 8px;
     display: flex; flex-direction: column; gap: 6px; border-radius: 8px;
@@ -126,12 +157,16 @@ export function writeInstruction(node, name, slot, text, add) {
     if (widget) widget.value = JSON.stringify(map);
     refresh(node);
     node.setDirtyCanvas?.(true, true);
+    graphChanged();
 }
 
 
 let openEditor = null;
+let dismissEditor = null;
 
 function closeEditor() {
+    dismissEditor?.();
+    dismissEditor = null;
     openEditor?.remove();
     openEditor = null;
 }
@@ -215,10 +250,13 @@ export function askForInstruction(anchor, label, current, save) {
 
     const away = (event) => {
         if (panel.contains(event.target)) return;
-        window.removeEventListener("pointerdown", away, true);
         closeEditor();
     };
-    setTimeout(() => window.addEventListener("pointerdown", away, true), 0);
+    const opening = setTimeout(() => window.addEventListener("pointerdown", away, true), 0);
+    dismissEditor = () => {
+        clearTimeout(opening);
+        window.removeEventListener("pointerdown", away, true);
+    };
 }
 
 
@@ -258,7 +296,7 @@ Click to edit, right-click to clear.`
     return band;
 }
 
-export function chipElement(entry, plain = false) {
+export function chipElement(entry, plain = false, preview = null) {
     const chip = document.createElement("div");
     chip.className =
         (entry.on ? "mmx-chip" : "mmx-chip mmx-off") + (plain ? " mmx-plain" : "");
@@ -268,19 +306,54 @@ export function chipElement(entry, plain = false) {
     const role = document.createElement("span");
     role.className = "mmx-chip-role";
     role.textContent = SHORT[entry.role];
+    if (entry.sound) {
+        role.classList.add("mmx-heard");
+        if (entry.soundNumber) role.textContent = `${SHORT[entry.role]}+a${entry.soundNumber}`;
+        else {
+            role.classList.add("mmx-idle");
+            role.textContent = `${SHORT[entry.role]}+a`;
+        }
+    }
     chip.appendChild(role);
 
+    const media = document.createElement("div");
+    media.className = "mmx-chip-media";
+    const about = drawPreview(media, chip, entry.kind ?? KIND_OF_ROLE[entry.role], preview);
+    if (entry.refmod) {
+        const mark = document.createElement("span");
+        mark.className = "mmx-chip-mod";
+        mark.textContent = "mod";
+        media.appendChild(mark);
+    }
     const number = document.createElement("span");
     number.className = "mmx-chip-num";
     number.textContent = entry.on ? String(entry.number) : "--";
-    chip.appendChild(number);
+    media.appendChild(number);
+    chip.appendChild(media);
 
     const slot = document.createElement("span");
     slot.className = "mmx-chip-slot";
     slot.textContent = entry.name;
     chip.appendChild(slot);
 
-    return { chip, role };
+    return { chip, role, about };
+}
+
+export function numberEntries(entries, sounding) {
+    let heard = 0;
+    for (const entry of entries) {
+        entry.soundNumber = sounding && entry.on && entry.sound ? ++heard : null;
+    }
+    const counts = {};
+    for (const entry of entries) {
+        if (!entry.on) {
+            entry.number = null;
+            continue;
+        }
+        counts[entry.role] = (counts[entry.role] || 0) + 1;
+        entry.number = counts[entry.role] + (entry.role === "Audio" ? heard : 0);
+    }
+    return entries;
 }
 
 export function stripHeight(node, count, hintHeight, hintGap, margin, chipHeight = CHIP_H) {
@@ -293,12 +366,19 @@ export function stripHeight(node, count, hintHeight, hintGap, margin, chipHeight
 
 
 export function linkKind(node, link) {
+    if (isRefmodLink(node, link)) return refmodAt(node, link)?.kind || "image";
     const links = node.graph?.links;
     const info = links?.get ? links.get(link) : links?.[link];
     const type = String(info?.type || "").toUpperCase();
     if (type.includes("AUDIO")) return "audio";
     if (type.includes("VIDEO")) return "video";
     return "image";
+}
+
+function linkRefmod(node, link) {
+    if (!isRefmodLink(node, link)) return null;
+    const found = refmodAt(node, link);
+    return { name: found?.name ?? "", channel: found?.channel ?? "visual" };
 }
 
 export function slotNumber(name) {
@@ -314,7 +394,12 @@ export function slots(node, prefix) {
         if (!tail.startsWith(prefix)) continue;
         const link = input.link;
         const connected = link !== null && link !== undefined;
-        found.push({ name: tail, connected, kind: connected ? linkKind(node, link) : "image" });
+        found.push({
+            name: tail,
+            connected,
+            kind: connected ? linkKind(node, link) : "image",
+            refmod: connected ? linkRefmod(node, link) : null,
+        });
     }
     return found;
 }

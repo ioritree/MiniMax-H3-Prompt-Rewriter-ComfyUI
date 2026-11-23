@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass
-
-import re
+from dataclasses import dataclass, replace
 
 from . import (
+    aspect,
     catalog,
+    checks,
     cli_engine,
     clip_caption,
     devices,
@@ -20,9 +20,17 @@ from . import (
     gguf_engine,
     guide_prompt,
     guides,
+    hub_sync,
+    library,
+    llama_flags,
     llamacpp,
     media,
+    memory,
+    model_sections,
     mtmd_engine,
+    ollama_store,
+    repair,
+    system_prompts,
 )
 from .catalog import FORMAT_GGUF, FORMAT_TRANSFORMERS
 from .constants import (
@@ -32,10 +40,13 @@ from .constants import (
     BASE_MODEL_REPO,
     BASE_SKIP_SUFFIXES,
     DEFAULT_OUTPUT_LANGUAGE,
-    DURATION_MAX,
-    DURATION_MIN,
+    DOWNLOADER_BUILTIN,
+    DOWNLOADER_HUB,
+    DOWNLOADERS,
     ENGLISH_OUTPUT_LANGUAGE,
     GGUF_RUNTIMES,
+    MERGE_AUTO,
+    MERGE_LORA,
     NO_REASONING,
     OUTPUT_FIELDS,
     OUTPUT_LANGUAGE_NAMES,
@@ -45,17 +56,23 @@ from .constants import (
     RUNTIME_AUTO,
     RUNTIME_BINARY,
     RUNTIME_WHEEL,
+    duration_widget,
     language_name,
 )
-from .fields import missing, split_fields, split_sections
+from .fields import split_fields, split_sections
 from .paths import (
     adapter_is_complete,
     base_model_is_complete,
     catalog_file,
+    local_dir_for_repo,
     models_root,
+    present_file,
+    present_folder,
+    present_pair,
+    refuse_network_path,
     resolve_source,
 )
-from .progress import NodeProgress, TransferReporter
+from .progress import NodeProgress, TransferReporter, announce
 from .prompt_template import build_messages
 
 log = logging.getLogger(__name__)
@@ -72,7 +89,9 @@ DEFAULT_OPTIONS = {
     "attn_implementation": "sdpa",
     "adapter": ADAPTER_REPO,
     "use_lora": True,
+    "merge_lora": MERGE_AUTO,
     "auto_download": True,
+    "downloader": DOWNLOADER_BUILTIN,
     "gpu_layers": -1,
     "n_ctx": 8192,
     "threads": -1,
@@ -82,7 +101,10 @@ DEFAULT_OPTIONS = {
     "gguf_runtime": RUNTIME_AUTO,
     "llama_backend": "auto",
     "device": devices.AUTO,
-    "trust_remote_code": False,
+    "prompt_file": library.DEFAULT_FILE,
+    "self_check": checks.REPORT_ALL,
+    "fix_once": False,
+    "captioner_thinking": llama_flags.OFF,
 }
 
 BASE_SPEC = {
@@ -102,15 +124,36 @@ ADAPTER_SPEC = {
 
 LOCAL_PREFIX = "on disk: "
 
+OLLAMA_PREFIX = "ollama: "
+
 
 @dataclass
 class Choice:
-    """Where a chosen model lives and how it has to be run."""
+    """Where a chosen model lives and how it has to be run.
+
+    ``copy_of`` is set on a scanned row whose file is what a list entry already
+    downloaded: the entry's label. Such a row is the same model twice, so it is
+    kept out of the dropdown -- but kept here, because a workflow saved before
+    it was hidden still names it, and it still resolves.
+    """
 
     reference: str
     fmt: str = FORMAT_TRANSFORMERS
     file: str = ""
     local: bool = False
+    copy_of: str = ""
+
+
+def _holding(section: str, entry: catalog.CatalogEntry) -> tuple[str, tuple[str, ...]]:
+    """An entry's label and where its files already are, for ``model_sections.copy_of``."""
+    return entry.label, model_sections.on_disk(
+        section, entry.fmt, entry.repo, entry.file, entry.mmproj
+    )
+
+
+def _shown(mapping: dict) -> list[str]:
+    """The labels a dropdown offers: everything but the scanned copies of entries."""
+    return [label for label, found in mapping.items() if not found.copy_of]
 
 
 _MODEL_MAP: dict[str, Choice] = {}
@@ -118,19 +161,26 @@ _MODEL_MAP: dict[str, Choice] = {}
 
 def _build_model_map() -> dict[str, Choice]:
     mapping: dict[str, Choice] = {}
+    held = []
     try:
         for entry in catalog.load():
             mapping[entry.label] = Choice(reference=entry.repo, fmt=entry.fmt, file=entry.file)
+            held.append(_holding("models", entry))
     except Exception:
         log.warning("[minimax_h3_rewriter._build_model_map] catalog unreadable", exc_info=True)
     try:
         for label, path in discovery.scan_local():
-            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(reference=path, local=True)
+            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(
+                reference=path, local=True, copy_of=model_sections.copy_of(held, path)
+            )
     except Exception:
         log.warning("[minimax_h3_rewriter._build_model_map] local scan failed", exc_info=True)
     try:
         for label, path in discovery.scan_local_gguf():
-            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(reference=path, fmt=FORMAT_GGUF, local=True)
+            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(
+                reference=path, fmt=FORMAT_GGUF, local=True,
+                copy_of=model_sections.copy_of(held, path),
+            )
     except Exception:
         log.warning("[minimax_h3_rewriter._build_model_map] gguf scan failed", exc_info=True)
 
@@ -155,34 +205,101 @@ def _announce(choices: list[str]) -> list[str]:
     return [f"{PROBLEM_PREFIX}{trouble} — showing the packaged list instead"] + choices
 
 
+def _problem_text(choice: str) -> str:
+    return (
+        f"{choice[len(PROBLEM_PREFIX):]}\n\nFix {catalog.user_file()} — the 'Model list' "
+        f"button opens a window with 'Open models.json' in it — then refresh the browser "
+        f"tab. ComfyUI need not restart. The window itself will not write to a file it "
+        f"cannot parse, since saving over one would replace your entries with the "
+        f"packaged list."
+    )
+
+
 def _refuse_problem(choice: str) -> None:
     if choice.startswith(PROBLEM_PREFIX):
-        raise RuntimeError(
-            f"{choice[len(PROBLEM_PREFIX):]}\n\nFix {catalog.user_file()} — the 'Open model "
-            f"list' button opens it — then refresh the browser tab. ComfyUI need not restart."
-        )
+        raise RuntimeError(_problem_text(choice))
+
+
+def _find(mapping: dict, build, section: str, choice: str):
+    """A label's ``Choice``, whether it is in the dropdown, hidden, or remembered.
+
+    The cached map first, as it always was; a fresh one if the file or the disk
+    changed since; and last the label the entry carries now, for a workflow saved
+    before its size, VRAM note or note was edited.
+    """
+    found = mapping.get(choice)
+    if found is None:
+        mapping = build()
+        found = mapping.get(choice)
+    if found is None:
+        found = mapping.get(model_sections.label_now(mapping, section, choice))
+    return found
+
+
+def _valid(choice, mapping: dict, section: str, gone) -> bool | str:
+    """``VALIDATE_INPUTS`` for one model dropdown: ``True``, or what to do instead.
+
+    ComfyUI's own check stops at "Value not in list" for anything the dropdown
+    does not show word for word, and two such labels still name exactly one
+    model: an entry's label from before its note was edited, and the scanned row
+    of a file an entry now stands for. Both are let through, and the resolver
+    maps them when the node runs. Anything else gets the resolver's own message,
+    which says what to do -- in place of a list of forty labels.
+
+    Only what the dropdown can name passes. The resolvers also take a path or a
+    repository id, for a value arriving over a wire; letting a typed one through
+    here would have the server look at whatever path an API prompt names.
+
+    ``None`` is a wired input, whose value does not exist until the graph runs.
+    """
+    if choice is None:
+        return True
+    choice = str(choice)
+    if choice.startswith(PROBLEM_PREFIX):
+        return _problem_text(choice)
+    if model_sections.label_now(mapping, section, choice):
+        return True
+    return gone(choice)
+
+
+def named_verdicts(*verdicts: tuple[str, bool | str]) -> bool | str:
+    """One answer from a validator that checks several dropdowns.
+
+    ComfyUI prints whatever comes back under *every* input the validator names,
+    so a message about ``writer_model`` also appeared under ``caption_model``.
+    Each failure carries the name of its own field, and there is one line per
+    failing field.
+    """
+    failed = [f"{name}: {found}" for name, found in verdicts if found is not True]
+    return "\n".join(failed) if failed else True
 
 
 def model_choices() -> list[str]:
-    choices = list(_build_model_map())
+    choices = _shown(_build_model_map())
     return _announce(choices or [BASE_MODEL_REPO])
+
+
+def _model_gone(choice: str) -> str:
+    return (
+        f"'{choice}' is not in the model list any more. Pick another entry, or add it back "
+        f"with the 'Model list' button ({catalog.user_file()})."
+    )
+
+
+def valid_model(choice) -> bool | str:
+    return _valid(choice, _MODEL_MAP or _build_model_map(), "models", _model_gone)
 
 
 def _resolve_model_choice(choice: str) -> Choice:
     _refuse_problem(choice)
-    found = _MODEL_MAP.get(choice)
-    if found is None:
-        found = _build_model_map().get(choice)
+    found = _find(_MODEL_MAP, _build_model_map, "models", choice)
     if found is not None:
         return found
     if choice and choice.lower().endswith(".gguf") and os.path.isfile(choice):
         return Choice(reference=choice, fmt=FORMAT_GGUF, local=True)
     if choice and ("/" in choice or os.path.isabs(choice)):
         return Choice(reference=choice)
-    raise RuntimeError(
-        f"'{choice}' is not in the model list any more. Pick another entry, or add it back "
-        f"with the 'Open model list' button ({catalog.user_file()})."
-    )
+    raise RuntimeError(_model_gone(choice))
 
 
 _WRITER_MAP: dict[str, Choice] = {}
@@ -197,16 +314,26 @@ def _build_writer_map() -> dict[str, Choice]:
     4B on an 8 GB card a real answer rather than a consolation prize.
     """
     mapping: dict[str, Choice] = {}
+    held = []
     try:
         for entry in catalog.writers():
             mapping[entry.label] = Choice(reference=entry.repo, fmt=FORMAT_GGUF, file=entry.file)
+            held.append(_holding("writers", replace(entry, fmt=FORMAT_GGUF)))
     except Exception:
         log.warning("[minimax_h3_rewriter._build_writer_map] catalog unreadable", exc_info=True)
     try:
         for label, path in discovery.scan_writer_gguf():
-            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(reference=path, fmt=FORMAT_GGUF, local=True)
+            mapping[f"{LOCAL_PREFIX}{label}"] = Choice(
+                reference=path, fmt=FORMAT_GGUF, local=True,
+                copy_of=model_sections.copy_of(held, path),
+            )
     except Exception:
         log.warning("[minimax_h3_rewriter._build_writer_map] gguf scan failed", exc_info=True)
+    try:
+        for label, path in ollama_store.scan_writers():
+            mapping[f"{OLLAMA_PREFIX}{label}"] = Choice(reference=path, fmt=FORMAT_GGUF, local=True)
+    except Exception:
+        log.warning("[minimax_h3_rewriter._build_writer_map] ollama scan failed", exc_info=True)
 
     _WRITER_MAP.clear()
     _WRITER_MAP.update(mapping)
@@ -214,24 +341,30 @@ def _build_writer_map() -> dict[str, Choice]:
 
 
 def writer_choices() -> list[str]:
-    choices = list(_build_writer_map())
+    choices = _shown(_build_writer_map())
     return _announce(choices or ["(no GGUF model found — see the model list)"])
 
 
-def _resolve_writer_choice(choice: str) -> Choice:
-    _refuse_problem(choice)
-    found = _WRITER_MAP.get(choice)
-    if found is None:
-        found = _build_writer_map().get(choice)
-    if found is not None:
-        return found
-    if choice and choice.lower().endswith(".gguf") and os.path.isfile(choice):
-        return Choice(reference=choice, fmt=FORMAT_GGUF, local=True)
-    raise RuntimeError(
+def _writer_gone(choice: str) -> str:
+    return (
         f"'{choice}' is not in the writer model list any more. Pick another entry, drop a "
         f"'.gguf' into ComfyUI's models/LLM folder, or add it under \"writers\" in "
         f"{catalog.user_file()}."
     )
+
+
+def valid_writer(choice) -> bool | str:
+    return _valid(choice, _WRITER_MAP or _build_writer_map(), "writers", _writer_gone)
+
+
+def _resolve_writer_choice(choice: str) -> Choice:
+    _refuse_problem(choice)
+    found = _find(_WRITER_MAP, _build_writer_map, "writers", choice)
+    if found is not None:
+        return found
+    if choice and choice.lower().endswith(".gguf") and os.path.isfile(choice):
+        return Choice(reference=choice, fmt=FORMAT_GGUF, local=True)
+    raise RuntimeError(_writer_gone(choice))
 
 
 @dataclass
@@ -242,6 +375,7 @@ class CaptionerChoice:
     file: str = ""
     mmproj: str = ""
     local: bool = False
+    copy_of: str = ""
 
 
 _CAPTIONER_MAP: dict[str, CaptionerChoice] = {}
@@ -249,6 +383,7 @@ _CAPTIONER_MAP: dict[str, CaptionerChoice] = {}
 
 def _build_captioner_map() -> dict[str, CaptionerChoice]:
     mapping: dict[str, CaptionerChoice] = {}
+    held = []
     try:
         for entry in catalog.captioners():
             if not entry.mmproj:
@@ -260,15 +395,24 @@ def _build_captioner_map() -> dict[str, CaptionerChoice]:
             mapping[entry.label] = CaptionerChoice(
                 reference=entry.repo, file=entry.file, mmproj=entry.mmproj
             )
+            held.append(_holding("captioners", replace(entry, fmt=FORMAT_GGUF)))
     except Exception:
         log.warning("[minimax_h3_rewriter._build_captioner_map] catalog unreadable", exc_info=True)
     try:
         for label, model_path, mmproj_path in discovery.scan_captioner_gguf():
             mapping[f"{LOCAL_PREFIX}{label}"] = CaptionerChoice(
-                reference=model_path, mmproj=mmproj_path, local=True
+                reference=model_path, mmproj=mmproj_path, local=True,
+                copy_of=model_sections.copy_of(held, model_path, mmproj_path),
             )
     except Exception:
         log.warning("[minimax_h3_rewriter._build_captioner_map] gguf scan failed", exc_info=True)
+    try:
+        for label, model_path, mmproj_path in ollama_store.scan_captioners():
+            mapping[f"{OLLAMA_PREFIX}{label}"] = CaptionerChoice(
+                reference=model_path, mmproj=mmproj_path, local=True
+            )
+    except Exception:
+        log.warning("[minimax_h3_rewriter._build_captioner_map] ollama scan failed", exc_info=True)
 
     _CAPTIONER_MAP.clear()
     _CAPTIONER_MAP.update(mapping)
@@ -276,22 +420,28 @@ def _build_captioner_map() -> dict[str, CaptionerChoice]:
 
 
 def captioner_choices() -> list[str]:
-    choices = list(_build_captioner_map())
+    choices = _shown(_build_captioner_map())
     return _announce(choices or ["(no multimodal model found — see the model list)"])
 
 
-def _resolve_captioner_choice(choice: str) -> CaptionerChoice:
-    _refuse_problem(choice)
-    found = _CAPTIONER_MAP.get(choice)
-    if found is None:
-        found = _build_captioner_map().get(choice)
-    if found is not None:
-        return found
-    raise RuntimeError(
+def _captioner_gone(choice: str) -> str:
+    return (
         f"'{choice}' is not in the captioner list any more. Pick another entry, put a '.gguf' "
         f"and its 'mmproj' together in one folder under ComfyUI's models/LLM, or add it under "
         f"\"captioners\" in {catalog.user_file()}."
     )
+
+
+def valid_captioner(choice) -> bool | str:
+    return _valid(choice, _CAPTIONER_MAP or _build_captioner_map(), "captioners", _captioner_gone)
+
+
+def _resolve_captioner_choice(choice: str) -> CaptionerChoice:
+    _refuse_problem(choice)
+    found = _find(_CAPTIONER_MAP, _build_captioner_map, "captioners", choice)
+    if found is not None:
+        return found
+    raise RuntimeError(_captioner_gone(choice))
 
 
 def _verify_base_model(
@@ -311,6 +461,7 @@ def _verify_base_model(
         report = discovery.inspect_local(reference, shape)
     else:
         repo_id, local_dir = resolve_source(reference, default_repo)
+        local_dir = present_folder(reference, default_repo) or local_dir
         if os.path.isdir(local_dir) and discovery.read_local_config(local_dir):
             report = discovery.inspect_local(local_dir, shape)
         elif repo_id:
@@ -329,51 +480,104 @@ def _verify_base_model(
     )
 
 
-def _fetch(repo_id: str, dest_dir: str, allow, skip_suffixes, progress: NodeProgress) -> None:
-    reporter = TransferReporter(progress, 1, f"Downloading {repo_id}")
-    download.sync_repo(
-        repo_id,
-        dest_dir,
-        allow=allow,
-        skip_suffixes=skip_suffixes,
-        on_progress=reporter,
-        on_status=lambda message: progress.text(message, force=True),
-        on_total=reporter.set_total,
+def _fetch(
+    repo_id: str,
+    dest_dir: str,
+    allow,
+    skip_suffixes,
+    progress: NodeProgress,
+    downloader: str = DOWNLOADER_BUILTIN,
+) -> None:
+    """Mirror a repository, through whichever transfer the options asked for.
+
+    This is the one place the two backends meet. They write the same files to
+    the same places and differ only in how fast they get there, so an option
+    this installation cannot honour falls back instead of refusing: the value
+    rides inside the workflow, and a graph authored on a machine that has
+    huggingface_hub should still run on one that does not.
+    """
+    title = f"Downloading {repo_id}"
+    backend = download
+    if downloader == DOWNLOADER_HUB:
+        if hub_sync.available():
+            backend = hub_sync
+        else:
+            log.warning(
+                "[minimax_h3_rewriter._fetch] '%s' was asked for but is not installed here, "
+                "so the built-in transfer is used instead.\n%s",
+                DOWNLOADER_HUB, hub_sync.INSTALL_HINT,
+            )
+            title += f" (no {DOWNLOADER_HUB} here, using the built-in transfer)"
+
+    log.info(
+        "[minimax_h3_rewriter._fetch] %s: fetching %s into %s",
+        repo_id, ", ".join(allow) if allow else "the repository", dest_dir,
     )
+    reporter = TransferReporter(progress, 1, title)
+    try:
+        backend.sync_repo(
+            repo_id,
+            dest_dir,
+            allow=allow,
+            skip_suffixes=skip_suffixes,
+            on_progress=reporter,
+            on_status=lambda message: progress.text(message, force=True),
+            on_total=reporter.set_total,
+        )
+    except Exception as error:
+        log.info(
+            "[minimax_h3_rewriter._fetch] %s: stopped at %s of %s (%s). What arrived stays "
+            "in %s, and the next run carries on from it.",
+            repo_id,
+            download.human_size(reporter.transferred),
+            download.human_size(reporter.total_bytes),
+            "cancelled" if hub_sync._is_interrupt(error) else type(error).__name__,
+            dest_dir,
+        )
+        raise
 
 
-def _ensure_present(value: str, spec: dict, auto_download: bool, progress: NodeProgress) -> str:
-    """Return a local directory holding the model, downloading it when allowed."""
+def _ensure_present(value: str, spec: dict, settings: dict, progress: NodeProgress) -> str:
+    """Return a local directory holding the model, downloading it when allowed.
+
+    Takes the whole options dict rather than the one flag it used to, because
+    whether to download and how to download it are both read here now.
+    """
     repo_id, local_dir = resolve_source(value, spec["default_repo"])
-    if spec["complete"](local_dir):
-        return local_dir
+    found = present_folder(value, spec["default_repo"], spec["complete"])
+    if found:
+        return found
 
     if not repo_id:
         raise RuntimeError(
             f"{spec['label']} was not found in '{local_dir}'. Point it at a Hugging Face "
             f"repository id (for example '{spec['default_repo']}') or a complete local folder."
         )
-    if not auto_download:
+    if not settings["auto_download"]:
         raise RuntimeError(
             f"{spec['label']} is missing from '{local_dir}' and auto_download is off. "
             f"Enable it, or fetch '{repo_id}' manually into that folder."
         )
 
-    _fetch(repo_id, local_dir, spec["allow"], spec["skip_suffixes"], progress)
+    _fetch(
+        repo_id, local_dir, spec["allow"], spec["skip_suffixes"], progress,
+        settings.get("downloader", DOWNLOADER_BUILTIN),
+    )
     if not spec["complete"](local_dir):
         raise RuntimeError(f"{spec['label']} is still incomplete after downloading into '{local_dir}'.")
     return local_dir
 
 
-def _ensure_file(repo_id: str, filename: str, label: str, auto_download: bool, progress: NodeProgress) -> str:
+def _ensure_file(repo_id: str, filename: str, label: str, settings: dict, progress: NodeProgress) -> str:
     """Return a local path to one file of a repository, fetching it when allowed."""
     if not filename:
         raise RuntimeError(f"{label}: no file name given for repository '{repo_id}'.")
 
+    found = present_file(repo_id, filename)
+    if found:
+        return found
     on_disk = catalog_file(repo_id, filename)
     if on_disk:
-        if os.path.isfile(on_disk):
-            return on_disk
         raise RuntimeError(
             f"{label}: '{on_disk}' does not exist. The entry points at a folder on this "
             f"machine, so nothing is downloaded — check the path and the file name."
@@ -385,22 +589,23 @@ def _ensure_file(repo_id: str, filename: str, label: str, auto_download: bool, p
         )
 
     destination = os.path.join(models_root(), filename)
-    if os.path.isfile(destination) and os.path.getsize(destination) > 0:
-        return destination
-    if not auto_download:
+    if not settings["auto_download"]:
         raise RuntimeError(
             f"{label} is missing from '{destination}' and auto_download is off. "
             f"Enable it, or fetch '{filename}' from '{repo_id}' into that folder."
         )
 
-    _fetch(repo_id, models_root(), (filename,), (), progress)
+    _fetch(
+        repo_id, models_root(), (filename,), (), progress,
+        settings.get("downloader", DOWNLOADER_BUILTIN),
+    )
     if not os.path.isfile(destination):
         raise RuntimeError(f"{label}: '{filename}' was not present after downloading from '{repo_id}'.")
     return destination
 
 
 def _ensure_pair(
-    repo_id: str, file: str, mmproj: str, label: str, auto_download: bool, progress: NodeProgress
+    repo_id: str, file: str, mmproj: str, label: str, settings: dict, progress: NodeProgress
 ) -> tuple[str, str]:
     """Return local paths to a model and its projector, fetching both if allowed.
 
@@ -408,37 +613,39 @@ def _ensure_pair(
     the pair stays obvious to the local scan: one projector beside one model
     needs no name matching at all.
     """
+    found = present_pair(repo_id, file, mmproj)
+    if found:
+        return found
     on_disk = tuple(catalog_file(repo_id, name) for name in (file, mmproj))
     if all(on_disk):
         missing = [path for path in on_disk if not os.path.isfile(path)]
-        if missing:
-            raise RuntimeError(
-                f"{label}: {', '.join(repr(path) for path in missing)} does not exist. The entry "
-                f"points at a folder on this machine, so nothing is downloaded — check the path "
-                f"and the file names."
-            )
-        return on_disk[0], on_disk[1]
+        raise RuntimeError(
+            f"{label}: {', '.join(repr(path) for path in missing)} does not exist. The entry "
+            f"points at a folder on this machine, so nothing is downloaded — check the path "
+            f"and the file names."
+        )
 
-    directory = os.path.join(models_root(), repo_id.rstrip("/").split("/")[-1])
+    directory = local_dir_for_repo(repo_id)
     targets = tuple(os.path.join(directory, name) for name in (file, mmproj))
 
     def complete() -> bool:
         return all(os.path.isfile(path) and os.path.getsize(path) > 0 for path in targets)
 
-    if complete():
-        return targets
     if os.path.isabs(repo_id):
         raise RuntimeError(
             f"{label}: '{repo_id}' is not a folder on this machine. Give an existing folder "
             f"holding both '{file}' and '{mmproj}', or a Hugging Face repository id."
         )
-    if not auto_download:
+    if not settings["auto_download"]:
         raise RuntimeError(
             f"{label} is missing from '{directory}' and auto_download is off. Enable it, or "
             f"fetch '{file}' and '{mmproj}' from '{repo_id}' into that folder."
         )
 
-    _fetch(repo_id, directory, (file, mmproj), (), progress)
+    _fetch(
+        repo_id, directory, (file, mmproj), (), progress,
+        settings.get("downloader", DOWNLOADER_BUILTIN),
+    )
     if not complete():
         raise RuntimeError(
             f"{label}: '{file}' and '{mmproj}' were not both present after downloading from "
@@ -447,31 +654,20 @@ def _ensure_pair(
     return targets
 
 
-_EXTENDED_LOCAL = re.compile(r"^\\\\[?.]\\[A-Za-z]:")
-
-
 def _refuse_remote(value: str) -> None:
     """Refuse a network location that arrived through a widget.
 
-    Paths in ``models.json`` are the user's own and may point wherever they
-    like, a NAS included; that file never leaves the machine unless somebody
-    sends it. This string is the other kind. It rides inside the workflow JSON,
-    so a graph downloaded from anywhere gets to choose it, and merely *looking*
-    at a UNC path is an authentication attempt against whatever host is named --
-    it happens on the ``isfile`` call, long before anything decides the adapter
-    is unusable. Nothing legitimate is lost: a share holding your models is
-    reachable through a drive letter or a mount point like any other folder.
+    The rule and the reasoning live in ``paths.refuse_network_path``, which the
+    model-list routes share: this string rides inside the workflow JSON, so a
+    graph downloaded from anywhere gets to choose it.
     """
-    text = (value or "").strip()
-    if os.name == "nt":
-        text = text.replace("/", "\\")
-    if not text.startswith("\\\\") or _EXTENDED_LOCAL.match(text):
-        return
-    raise RuntimeError(
-        f"'{value}' is a network path, and the options node will not follow one.\n\n"
-        f"This field travels inside the workflow, so a graph from elsewhere could point it "
+    refuse_network_path(
+        value,
+        "the options node",
+        "This field travels inside the workflow, so a graph from elsewhere could point it "
         f"at any host. Map the share to a drive letter and use that, or put the adapter in "
-        f"{catalog.user_file()} instead — paths in that file are yours and are not restricted."
+        f"{catalog.user_file()} instead — paths written into that file by hand are yours "
+        f"and are not restricted.",
     )
 
 
@@ -588,7 +784,7 @@ def _announce_adapter(fmt: str, value: str, path: str) -> None:
 def _resolve_adapter(
     fmt: str,
     setting: str,
-    auto_download: bool,
+    settings: dict,
     progress: NodeProgress,
     section: str = catalog.ADAPTERS_27B,
 ) -> str:
@@ -602,7 +798,7 @@ def _resolve_adapter(
     """
     value = _resolve_adapter_choice((setting or "").strip())
     _refuse_remote(value)
-    path = _locate_adapter(fmt, value, auto_download, progress, section)
+    path = _locate_adapter(fmt, value, settings, progress, section)
     _announce_adapter(fmt, value, path)
     return path
 
@@ -610,7 +806,7 @@ def _resolve_adapter(
 def _locate_adapter(
     fmt: str,
     value: str,
-    auto_download: bool,
+    settings: dict,
     progress: NodeProgress,
     section: str = catalog.ADAPTERS_27B,
 ) -> str:
@@ -626,7 +822,7 @@ def _locate_adapter(
                 f"matches the model, or pick a GGUF base model to go with it."
             )
         return _ensure_present(
-            value, dict(ADAPTER_SPEC, default_repo=default), auto_download, progress
+            value, dict(ADAPTER_SPEC, default_repo=default), settings, progress
         )
 
     spec = catalog.adapter(FORMAT_GGUF, section)
@@ -639,7 +835,7 @@ def _locate_adapter(
             source = _adapter_source(value)
             repo = source.repo if source is not None else (spec.repo if spec.configured else "")
             if repo:
-                return _ensure_file(repo, value, "Prompt-rewriter LoRA", auto_download, progress)
+                return _ensure_file(repo, value, "Prompt-rewriter LoRA", settings, progress)
         raise RuntimeError(
             f"Prompt-rewriter LoRA: '{value}' does not exist, and is not a file name that "
             f"could be fetched from '{spec.repo or 'the configured adapter repository'}'."
@@ -657,7 +853,7 @@ def _locate_adapter(
             f"adapters.gguf.repo in {catalog.user_file()}. Turning 'use_lora' off runs the "
             "plain base model instead." + hint
         )
-    return _ensure_file(spec.repo, spec.file, "Prompt-rewriter LoRA", auto_download, progress)
+    return _ensure_file(spec.repo, spec.file, "Prompt-rewriter LoRA", settings, progress)
 
 
 def _gguf_text(settings: dict, **common) -> str:
@@ -787,6 +983,24 @@ class MiniMaxH3RewriterOptions:
                     "BOOLEAN",
                     {"default": True, "tooltip": "Turn off to run the plain Qwen3.6-27B baseline."},
                 ),
+                "merge_lora": (
+                    list(MERGE_LORA),
+                    {
+                        "default": MERGE_AUTO,
+                        "tooltip": (
+                            "Fold the adapter into the base weights once at load, rather than "
+                            "running it as its own matmuls on every token. Measured on "
+                            "Qwen3-VL-8B: 25 tokens a second against 14. 'auto' merges on an "
+                            "unquantized base, where it costs 0.07 s and nothing else, and "
+                            "leaves the adapter attached on a bitsandbytes 4-bit or 8-bit one, "
+                            "where merging means dequantizing and quantizing back. 'on' merges "
+                            "there too, for about 4.5 s at load and the same speed afterwards.\n\n"
+                            "A merged run is not word-for-word the unmerged one at the same "
+                            "seed: folding the adapter in reassociates the arithmetic, so a "
+                            "token here and there comes out different. GGUF is unaffected."
+                        ),
+                    },
+                ),
                 "auto_download": (
                     "BOOLEAN",
                     {
@@ -851,20 +1065,112 @@ class MiniMaxH3RewriterOptions:
                         ),
                     },
                 ),
-                "trust_remote_code": (
+                "prompt_file": (
+                    library.files(),
+                    {
+                        "default": library.DEFAULT_FILE,
+                        "tooltip": (
+                            "Which set of saved prompts the nodes connected to this one work in: the "
+                            "file the save dialog writes to and the library window lists. One file is "
+                            "one working set, so a workflow can keep its prompts apart from the rest.\n\n"
+                            "The button below makes a new one. The list is read when ComfyUI starts, so "
+                            "a file made by hand needs a browser refresh to appear here -- the same as "
+                            "the model list. Nothing in the run reads this: a prompt already chosen "
+                            "carries its own file name, so the pick keeps working whatever this says."
+                        ),
+                    },
+                ),
+                "self_check": (
+                    list(checks.REPORT_LEVELS),
+                    {
+                        "default": checks.REPORT_ALL,
+                        "tooltip": (
+                            "How much of the self-check the nodes connected to this one say out "
+                            "loud. Every fresh answer is read back against the rules of MiniMax's "
+                            "own writing guides -- shot numbering and cut times against the "
+                            "duration, dialogue markup, reference tags against what the task takes "
+                            "and what is connected, retention entries, the alignment line.\n\n"
+                            "'warnings and notes' says everything. 'warnings only' drops the "
+                            "guide's softer suggestions, such as the 350-500 word length, and "
+                            "keeps what H3 will likely misread. 'off' says nothing.\n\n"
+                            "The reading itself is regexes over text already in memory and costs "
+                            "nothing, so this decides what is reported, not what is looked at -- "
+                            "'fix_once' keeps working with this off. It does not cover the nodes' "
+                            "own warnings about their inputs, which are about your wiring rather "
+                            "than the model's prose and are always said."
+                        ),
+                    },
+                ),
+                "fix_once": (
                     "BOOLEAN",
                     {
                         "default": False,
                         "tooltip": (
-                            "Non-GGUF models only. Some checkpoints ship their own Python and "
-                            "Transformers runs it when the model loads. Off means such a model "
-                            "is refused rather than executed. Turn it on only for a model you "
-                            "picked and trust — not because a downloaded workflow asked for it."
+                            "Let the nodes act on what the self-check found, instead of only "
+                            "saying it. Off -- the default -- means the answer you get is exactly "
+                            "what the model wrote.\n\n"
+                            "Two things happen when it is on. The alignment line of the frame "
+                            "tasks is a fixed sentence the node already knows, so a model that "
+                            "dropped it simply gets it back: no model, no risk. And for the "
+                            "mechanical findings -- a cut time past the end, an unbalanced <d>, a "
+                            "tag pointing at a reference that is not there -- the writer is asked "
+                            "once more with those findings folded into the prompt as rules.\n\n"
+                            "Once, never a loop: a model that ignored a rule twice will ignore it "
+                            "a third time, and every attempt costs a full generation. The re-run "
+                            "is skipped on an answer too broken to rescue, and its result is kept "
+                            "only if it is genuinely better -- otherwise the first answer stands. "
+                            "Whatever happens is said on the node."
                         ),
                     },
                 ),
-                # Last, like every widget added after a node shipped: ComfyUI
-                # restores saved values by position.
+                "downloader": (
+                    list(DOWNLOADERS),
+                    {
+                        "default": DOWNLOADER_BUILTIN,
+                        "tooltip": (
+                            "Which code moves the bytes when a model is fetched from Hugging "
+                            "Face. The default is this pack's own transfer, which needs nothing "
+                            "installed and pulls one ranged connection at a time.\n\n"
+                            "'huggingface_hub' is worth picking for the large weights. The "
+                            "Comfy-Org repositories are Xet-backed, and with 'hf_xet' installed "
+                            "the chunks of a single file come down over many connections at "
+                            "once -- the difference between an evening and a coffee on a 30 GB "
+                            "model. Neither package is a dependency of this pack: install them "
+                            "into ComfyUI's own Python, and if they are not importable the "
+                            "built-in transfer runs instead and says so on the node. Nothing "
+                            "fails.\n\n"
+                            "It covers Hugging Face repositories only -- base models, GGUF "
+                            "writers, LoRA adapters, a model and its projector. The llama.cpp "
+                            "binaries come from GitHub releases and the two writing guides are "
+                            "one small request each; neither goes through this.\n\n"
+                            "Half-finished files are not interchangeable between the two. The "
+                            "built-in transfer parks bytes in '<name>.part' beside the file, "
+                            "huggingface_hub parks them under '.cache/huggingface' inside the "
+                            "folder. Switching in the middle of a download restarts that one "
+                            "file and leaves the other's leftovers behind to delete by hand. A "
+                            "file that is already complete is never fetched twice either way.\n\n"
+                            "Cancelling stops between files at once; inside a file it can take "
+                            "a moment on the Xet path."
+                        ),
+                    },
+                ),
+                "captioner_thinking": (
+                    list(llama_flags.THINKING),
+                    {
+                        "default": llama_flags.OFF,
+                        "tooltip": (
+                            "GGUF reference captioners only. 'off' disables thinking with "
+                            "--reasoning off when supported; 'auto' keeps the model template "
+                            "default, and 'on' requests thinking. Supported flags are read "
+                            "once from the binary's --help. If the CLI cannot set thinking, "
+                            "a compatible llama-server beside it is used even for one "
+                            "reference. Old builds still run with a warning when the "
+                            "setting cannot be applied. Does not change writer generation "
+                            "or the CLIP caption route. Captions keep their 1024-token cap."
+                        ),
+                    },
+                ),
+                system_prompts.FIELD: system_prompts.input_spec(),
                 "threads": (
                     "INT",
                     {"default": -1, "min": -1, "max": 256, "tooltip": THREADS_TOOLTIP},
@@ -888,6 +1194,7 @@ class MiniMaxH3RewriterOptions:
     RETURN_NAMES = ("options",)
     FUNCTION = "build"
     CATEGORY = CATEGORY
+    IS_CHANGED = staticmethod(system_prompts.stamp)
 
     def build(self, **kwargs):
         options = dict(DEFAULT_OPTIONS)
@@ -925,6 +1232,19 @@ BYPASS_CAPTION_TOOLTIP = (
 )
 
 
+def _warn_off_base(model_path: str, base: str, progress: NodeProgress) -> None:
+    """Say it on the node when the GGUF's header names a model other than ``base``.
+
+    A warning rather than a refusal, for the reasons in
+    ``discovery.gguf_base_note``: the shape already fits, and the names it goes
+    by are whatever the quantiser wrote.
+    """
+    note = discovery.gguf_base_note(model_path, base)
+    if note:
+        log.warning("[minimax_h3_rewriter.base] %s", note)
+        announce(progress.node_id, [("warn", note)])
+
+
 def _bypassed(unique_id, text: str, names: tuple[str, ...]) -> tuple[str, ...]:
     """Hand the prompt back untouched, with one empty string per section output."""
     NodeProgress(unique_id).finish("bypassed")
@@ -935,7 +1255,7 @@ def rewrite_t2va(
     model: str,
     prompt: str,
     resolution: str,
-    duration: int,
+    duration: float,
     quantization: str,
     greedy: bool,
     seed: int,
@@ -955,7 +1275,7 @@ def rewrite_t2va(
     choice = _resolve_model_choice(model)
 
     decoding = {
-        "messages": build_messages(prompt, resolution, int(duration), language),
+        "messages": build_messages(prompt, resolution, float(duration), language),
         "seed": int(seed),
         "greedy": greedy,
         "max_new_tokens": int(settings["max_new_tokens"]),
@@ -970,7 +1290,7 @@ def rewrite_t2va(
             model_path = choice.reference
         else:
             model_path = _ensure_file(
-                choice.reference, choice.file, "Base model", settings["auto_download"], progress
+                choice.reference, choice.file, "Base model", settings, progress
             )
         log.info("[minimax_h3_rewriter.rewrite] base model: %s", model_path)
         adapter_path = None
@@ -982,8 +1302,9 @@ def rewrite_t2va(
                     + problem
                     + "\nTurn 'use_lora' off to run it as a plain model anyway."
                 )
+            _warn_off_base(model_path, discovery.BASE_NAME, progress)
             adapter_path = _resolve_adapter(
-                FORMAT_GGUF, settings["adapter"], settings["auto_download"], progress
+                FORMAT_GGUF, settings["adapter"], settings, progress
             )
         common = dict(
             model_path=model_path,
@@ -998,12 +1319,12 @@ def rewrite_t2va(
         return _gguf_text(settings, **common)
 
     _verify_base_model(choice.reference, progress)
-    base_dir = _ensure_present(choice.reference, BASE_SPEC, settings["auto_download"], progress)
+    base_dir = _ensure_present(choice.reference, BASE_SPEC, settings, progress)
     log.info("[minimax_h3_rewriter.rewrite] base model: %s", base_dir)
     adapter_dir = None
     if settings["use_lora"]:
         adapter_dir = _resolve_adapter(
-            FORMAT_TRANSFORMERS, settings["adapter"], settings["auto_download"], progress
+            FORMAT_TRANSFORMERS, settings["adapter"], settings, progress
         )
     return engine.rewrite(
         base_dir=base_dir,
@@ -1013,7 +1334,7 @@ def rewrite_t2va(
         keep_loaded=keep_loaded,
         device=settings["device"],
         progress=progress,
-        trust_remote_code=bool(settings.get("trust_remote_code", False)),
+        merge_lora=settings.get("merge_lora", MERGE_AUTO),
         **decoding,
     )
 
@@ -1053,18 +1374,9 @@ class MiniMaxH3PromptRewriter:
                 ),
                 "resolution": (
                     list(RESOLUTIONS),
-                    {"default": "16:9", "tooltip": "Target aspect ratio the rewrite is composed for."},
+                    {"default": "16:9", "socketless": True, "tooltip": aspect.PICKER_TOOLTIP},
                 ),
-                "duration": (
-                    "INT",
-                    {
-                        "default": 10,
-                        "min": DURATION_MIN,
-                        "max": DURATION_MAX,
-                        "step": 1,
-                        "tooltip": "Target clip length in seconds; drives shot count and pacing.",
-                    },
-                ),
+                "duration": duration_widget(),
                 "quantization": (
                     list(QUANTIZATIONS),
                     {
@@ -1106,8 +1418,14 @@ class MiniMaxH3PromptRewriter:
                 ),
             },
             "optional": {
+                "aspect_ratio": (
+                    "STRING,COMBO",
+                    {"default": "", "widgetType": "STRING", "tooltip": aspect.TOOLTIP},
+                ),
                 "options": (OPTIONS_TYPE,),
                 "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_TOOLTIP}),
+                "repeat_last": ("BOOLEAN", {"default": False, "tooltip": memory.REPEAT_TOOLTIP}),
+                "library_pick": ("STRING", {"default": "", "tooltip": library.PICK_TOOLTIP}),
                 "output_language": _language_widget(LORA_LANGUAGE_TOOLTIP),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
@@ -1117,6 +1435,23 @@ class MiniMaxH3PromptRewriter:
     RETURN_NAMES = ("rewritten_prompt",) + OUTPUT_FIELDS
     FUNCTION = "rewrite"
     CATEGORY = CATEGORY
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, model=None):
+        return valid_model(model)
+
+    @classmethod
+    def IS_CHANGED(cls, library_pick="", repeat_last=False, unique_id=None, **kwargs):
+        """Whether what this node would hand back without running has changed.
+
+        Neither a record edited in the library window nor an answer edited in
+        the node's own memory touches a single input, so without this the
+        answer would come back out of ComfyUI's execution cache, still saying
+        what it said before the edit.
+        """
+        return library.stamp(library_pick, repeat_last) + memory.stamp(
+            unique_id, repeat_last
+        )
 
     def rewrite(
         self,
@@ -1128,31 +1463,68 @@ class MiniMaxH3PromptRewriter:
         greedy,
         seed,
         keep_model_loaded,
+        aspect_ratio=None,
         options=None,
         bypass=False,
+        repeat_last=False,
+        library_pick="",
         output_language=DEFAULT_OUTPUT_LANGUAGE,
         unique_id=None,
     ):
+        given = dict(locals())
         if bypass:
             return _bypassed(unique_id, prompt, OUTPUT_FIELDS)
 
-        if not (prompt or "").strip():
+        chosen, saved = library.picked(
+            library_pick, repeat_last, "MiniMaxH3PromptRewriter",
+            1 + len(OUTPUT_FIELDS), unique_id, having=(),
+            keep_loaded=keep_model_loaded,
+        )
+        if chosen is not None:
+            return chosen
+
+        kept = memory.repeat(unique_id, "MiniMaxH3PromptRewriter", repeat_last and not saved, given)
+        if kept is not None:
+            return kept
+
+        if not saved and not (prompt or "").strip():
             raise ValueError("prompt must not be empty")
+
+        resolution = aspect.resolve(aspect_ratio, resolution)
 
         settings = dict(DEFAULT_OPTIONS)
         if options:
             settings.update(options)
 
         progress = NodeProgress(unique_id)
-        text = rewrite_t2va(
+        text = saved or rewrite_t2va(
             model, prompt, resolution, duration, quantization,
             greedy, seed, keep_model_loaded, settings, progress,
             language=output_language,
         )
 
+        if not saved:
+            text = _fix_once(
+                text, progress,
+                lambda extra: rewrite_t2va(
+                    model, prompt + extra, resolution, duration, quantization,
+                    greedy, seed, keep_model_loaded, settings, progress,
+                ),
+                OUTPUT_FIELDS, task="T2VA", duration=duration, having=(), settings=settings,
+            )
         fields = split_fields(text)
-        progress.text(text[-2000:] if text else "(empty rewrite)", force=True)
-        return (text,) + tuple(fields[name] for name in OUTPUT_FIELDS)
+        if not saved:
+            _report(
+                progress, text, fields, OUTPUT_FIELDS,
+                task="T2VA", duration=duration, having=(), settings=settings,
+            )
+        outputs = (text,) + tuple(fields[name] for name in OUTPUT_FIELDS)
+        if not saved:
+            memory.keep(
+                unique_id, "MiniMaxH3PromptRewriter", outputs, given,
+                task="T2VA", fields=OUTPUT_FIELDS,
+            )
+        return outputs
 
 
 REFERENCE_PLACEHOLDER = (
@@ -1193,34 +1565,34 @@ def _language_widget(tooltip: str = OUTPUT_LANGUAGE_TOOLTIP) -> tuple:
     )
 
 
-def _guided_text(
-    mode: str,
+def run_messages(
     model: str,
-    prompt: str,
-    resolution: str,
-    duration: float,
-    references: str,
+    messages: list[dict[str, str]],
     greedy: bool,
     seed: int,
     keep_model_loaded: bool,
     settings: dict,
     progress: NodeProgress,
-    language: str = DEFAULT_OUTPUT_LANGUAGE,
-    system_prompt: str = "",
+    label: str = "",
 ) -> str:
-    """Run one guided rewrite and return the model's raw answer.
+    """Run one chat completion on a model from the writer list, and return it raw.
 
-    ``system_prompt`` stands in for the whole assembled guide, and when it is
-    given the guide is never fetched: a writer aimed at another model has no use
-    for MiniMax's document, and an offline machine should not be made to
-    download one to ignore it.
+    Everything from here down is the same whatever the messages say, so it is
+    the same code: picking the file out of the list, fetching it if it is not
+    on disk yet, refusing a LoRA that cannot run on its own, widening the
+    context to fit what is actually being sent, and choosing between the wheel
+    and the official binaries. A node that has its own reason to talk to a
+    local model -- the guided writers, the reducer -- builds its messages and
+    hands them here rather than repeating any of that.
+
+    ``label`` only names the caller in the log line and the caption.
     """
     choice = _resolve_writer_choice(model)
     if choice.local:
         model_path = choice.reference
     else:
         model_path = _ensure_file(
-            choice.reference, choice.file, "Writer model", settings["auto_download"], progress
+            choice.reference, choice.file, "Writer model", settings, progress
         )
 
     if discovery.gguf_header(model_path)["kind"] == "adapter":
@@ -1229,24 +1601,17 @@ def _guided_text(
             f"on its own. Pick a base model from the list."
         )
 
-    given = (system_prompt or "").strip()
-    guide = "" if given else guides.text(
-        guide_prompt.GUIDE_FOR_MODE[mode], settings["auto_download"], progress
-    )
-    messages = guide_prompt.build_messages(
-        guide, mode, prompt, resolution, duration, references, language, system=given
-    )
-
     max_new_tokens = int(settings["max_new_tokens"])
     n_ctx = int(settings["n_ctx"])
     needed = guide_prompt.context_needed(messages, max_new_tokens)
     if needed > n_ctx:
         log.info(
-            "[minimax_h3_rewriter._guided_text] raising n_ctx from %d to %d for the %s guide",
-            n_ctx, needed, mode,
+            "[minimax_h3_rewriter.run_messages] raising n_ctx from %d to %d for %s",
+            n_ctx, needed, label or "this prompt",
         )
         progress.text(
-            f"{mode}: the guide needs a {needed}-token context, raising n_ctx from {n_ctx}",
+            f"{label + ': ' if label else ''}this prompt needs a {needed}-token context, "
+            f"raising n_ctx from {n_ctx}",
             force=True,
         )
         n_ctx = needed
@@ -1291,17 +1656,173 @@ def _guided_text(
     )
 
 
-def _report(progress: NodeProgress, text: str, sections: dict, names: tuple[str, ...]) -> None:
-    """Leave the answer on the node, and say so when it is not the right shape."""
-    absent = missing(sections, names)
-    note = ""
-    if absent:
-        note = (
-            f"⚠ {len(absent)} field(s) not found in the answer: {', '.join(absent)}\n"
-            f"Lower the temperature, or try a larger writer model.\n\n"
+def _guided_text(
+    mode: str,
+    model: str,
+    prompt: str,
+    resolution: str,
+    duration: float,
+    references: str,
+    greedy: bool,
+    seed: int,
+    keep_model_loaded: bool,
+    settings: dict,
+    progress: NodeProgress,
+    system_prompt: str = "",
+    language: str = DEFAULT_OUTPUT_LANGUAGE,
+) -> str:
+    """Run one guided rewrite and return the model's raw answer.
+
+    ``system_prompt`` stands in for the whole assembled guide, and when it is
+    given the guide is never fetched: a writer aimed at another model has no use
+    for MiniMax's document, and an offline machine should not be made to
+    download one to ignore it.
+    """
+    given = (system_prompt or "").strip()
+    guide = "" if given else guides.text(
+        guide_prompt.GUIDE_FOR_MODE[mode], settings["auto_download"], progress
+    )
+    messages = guide_prompt.build_messages(
+        guide, mode, prompt, resolution, duration, references, language, system=given
+    )
+    return run_messages(
+        model, messages, greedy, seed, keep_model_loaded, settings, progress, label=mode
+    )
+
+
+def _alignment_line(task: str, duration, body: str) -> str:
+    """The fixed opening sentence this task's answer should carry, formatted.
+
+    Single-sourced from ``guide_prompt`` so a wording change reaches the repair
+    too. FL2VA and L2VA name the final shot, which the guide leaves as a literal
+    ``N`` for the model to fill; restoring the line deterministically means
+    filling it here, from the description that came back.
+    """
+    mode = {
+        "i2va": "I2VA", "fl2va": "FL2VA", "l2va": "L2VA",
+    }.get(checks.normalize(task), "")
+    template = guide_prompt.ALIGNMENT_LINE.get(mode)
+    if not template:
+        return ""
+    line = template.format(seconds=f"{float(duration or 0):.2f}")
+    return line.replace("Shot N", f"Shot {repair.final_shot(body)}")
+
+
+def _fix_once(
+    text: str,
+    progress: NodeProgress,
+    regenerate,
+    names: tuple[str, ...],
+    task: str = "",
+    duration=None,
+    having=None,
+    fallback: str = "",
+    settings=None,
+) -> str:
+    """Act on the self-check, if the Options node asked for it.
+
+    Returns the text to use. With 'fix_once' off this is the model's own answer,
+    untouched -- that promise is the reason the switch exists. With it on, the
+    alignment line is restored for free where it is missing, and the mechanical
+    findings buy exactly one more generation through ``regenerate``, which takes
+    the constraints to append to the prompt and returns a fresh answer.
+
+    The second answer is kept only when ``repair.better`` says so, so the worst
+    case is a minute spent rather than a worse prompt.
+    """
+    if not (settings or {}).get("fix_once") or not (text or "").strip():
+        return text
+
+    sections = split_fields(text, names, fallback)
+    issues = checks.review(text, sections, names, task=task, duration=duration, having=having)
+    if not issues:
+        return text
+
+    done = []
+    if any(issue.code == "alignment" for issue in issues):
+        line = _alignment_line(task, duration, str(sections.get(fallback or names[0]) or ""))
+        if line:
+            text = repair.restore_alignment(text, line)
+            done.append("the alignment line was put back")
+            sections = split_fields(text, names, fallback)
+            issues = checks.review(
+                text, sections, names, task=task, duration=duration, having=having
+            )
+
+    wanted = repair.fixable(issues)
+    if wanted and repair.hopeless(issues, sections, names):
+        done.append(
+            "the answer was too far from the format to be worth writing again -- "
+            "try a larger writer model"
         )
-        log.warning("[minimax_h3_rewriter._report] fields missing from the rewrite: %s", absent)
-    progress.text(note + (text[-2000:] if text else "(empty rewrite)"), force=True)
+    elif wanted:
+        log.info(
+            "[minimax_h3_rewriter.repair] writing again once to fix: %s",
+            "; ".join(issue.message for issue in wanted),
+        )
+        progress.text(
+            f"self-check found {len(wanted)} thing(s) to fix -- writing once more", force=True
+        )
+        try:
+            second = regenerate(repair.instruct(issues))
+        except Exception:
+            log.warning("[minimax_h3_rewriter.repair] the second attempt failed", exc_info=True)
+            second = ""
+        if (second or "").strip():
+            after = checks.review(
+                second, split_fields(second, names, fallback), names,
+                task=task, duration=duration, having=having,
+            )
+            if repair.better(issues, after):
+                text = second
+                done.append(f"written again once, {len(issues) - len(after)} finding(s) fewer")
+            else:
+                done.append("written again once, and the first answer was better, so it stands")
+
+    if done:
+        said = "fix_once: " + "; ".join(done)
+        log.info("[minimax_h3_rewriter.repair] %s", said)
+        announce(progress.node_id, [(checks.INFO, said)])
+    return text
+
+
+def _report(
+    progress: NodeProgress,
+    text: str,
+    sections: dict,
+    names: tuple[str, ...],
+    task: str = "",
+    duration=None,
+    having=None,
+    settings=None,
+) -> None:
+    """Leave the answer on the node, with what the self-check found above it.
+
+    The check needs what the caller already has: which task was asked for, how
+    long the video is, and what references the node was shown -- ``having`` is
+    the same list the library's shape warning is made of, and None means the
+    node cannot know (the text-only writers), which skips the connected-versus-
+    cited rules rather than reporting nonsense.
+
+    ``settings`` carries the Options node's 'self_check', which decides how much
+    of what was found is said. The reading happens either way: it costs nothing,
+    and 'fix_once' reads the same findings whatever this says.
+    """
+    issues = checks.review(
+        text, sections, names, task=task, duration=duration, having=having
+    )
+    told = checks.reportable(issues, (settings or {}).get("self_check", checks.REPORT_ALL))
+    note = checks.describe(told)
+    if note:
+        log.warning(
+            "[minimax_h3_rewriter.checks] %s",
+            "; ".join(issue.message for issue in told),
+        )
+        announce(progress.node_id, told, kind="check")
+    progress.text(
+        ((note + "\n\n") if note else "") + (text[-2000:] if text else "(empty rewrite)"),
+        force=True,
+    )
 
 
 class MiniMaxH3GuidedWriter:
@@ -1332,7 +1853,8 @@ class MiniMaxH3GuidedWriter:
                     {
                         "tooltip": (
                             "Any GGUF language model. Entries prefixed 'on disk:' are already "
-                            "in your ComfyUI model folders; the rest are fetched on first use. "
+                            "in your ComfyUI model folders and 'ollama:' ones are models you "
+                            "pulled for Ollama; the rest are fetched on first use. "
                             "Nothing has to be installed: without llama-cpp-python the node "
                             "runs the official llama.cpp binaries."
                         ),
@@ -1352,18 +1874,9 @@ class MiniMaxH3GuidedWriter:
                 ),
                 "resolution": (
                     list(RESOLUTIONS),
-                    {"default": "16:9", "tooltip": "Target aspect ratio the rewrite is composed for."},
+                    {"default": "16:9", "socketless": True, "tooltip": aspect.PICKER_TOOLTIP},
                 ),
-                "duration": (
-                    "INT",
-                    {
-                        "default": 10,
-                        "min": DURATION_MIN,
-                        "max": DURATION_MAX,
-                        "step": 1,
-                        "tooltip": "Target clip length in seconds; drives shot count and pacing.",
-                    },
-                ),
+                "duration": duration_widget(),
                 "greedy": (
                     "BOOLEAN",
                     {
@@ -1396,6 +1909,10 @@ class MiniMaxH3GuidedWriter:
                 ),
             },
             "optional": {
+                "aspect_ratio": (
+                    "STRING,COMBO",
+                    {"default": "", "widgetType": "STRING", "tooltip": aspect.TOOLTIP},
+                ),
                 "reference_material": (
                     "STRING",
                     {
@@ -1420,6 +1937,8 @@ class MiniMaxH3GuidedWriter:
                     "STRING",
                     {"multiline": True, "default": "", "tooltip": SYSTEM_PROMPT_TOOLTIP},
                 ),
+                "repeat_last": ("BOOLEAN", {"default": False, "tooltip": memory.REPEAT_TOOLTIP}),
+                "library_pick": ("STRING", {"default": "", "tooltip": library.PICK_TOOLTIP}),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -1428,6 +1947,23 @@ class MiniMaxH3GuidedWriter:
     RETURN_NAMES = ("rewritten_prompt",) + OUTPUT_FIELDS
     FUNCTION = "write"
     CATEGORY = CATEGORY
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, model=None):
+        return valid_writer(model)
+
+    @classmethod
+    def IS_CHANGED(cls, library_pick="", repeat_last=False, unique_id=None, **kwargs):
+        """Whether what this node would hand back without running has changed.
+
+        Neither a record edited in the library window nor an answer edited in
+        the node's own memory touches a single input, so without this the
+        answer would come back out of ComfyUI's execution cache, still saying
+        what it said before the edit.
+        """
+        return library.stamp(library_pick, repeat_last) + memory.stamp(
+            unique_id, repeat_last
+        )
 
     def write(
         self,
@@ -1441,27 +1977,64 @@ class MiniMaxH3GuidedWriter:
         keep_model_loaded,
         reference_material="",
         system_prompt="",
+        aspect_ratio=None,
         options=None,
         bypass=False,
+        repeat_last=False,
+        library_pick="",
         output_language=DEFAULT_OUTPUT_LANGUAGE,
         unique_id=None,
     ):
+        given = dict(locals())
         if bypass:
             return _bypassed(unique_id, prompt, OUTPUT_FIELDS)
 
+        chosen, saved = library.picked(
+            library_pick, repeat_last, "MiniMaxH3GuidedWriter",
+            1 + len(OUTPUT_FIELDS), unique_id, having=(),
+            keep_loaded=keep_model_loaded,
+        )
+        if chosen is not None:
+            return chosen
+
+        kept = memory.repeat(unique_id, "MiniMaxH3GuidedWriter", repeat_last and not saved, given)
+        if kept is not None:
+            return kept
+
+        resolution = aspect.resolve(aspect_ratio, resolution)
         settings = dict(DEFAULT_OPTIONS)
         if options:
             settings.update(options)
         progress = NodeProgress(unique_id)
 
-        text = _guided_text(
+        if not saved:
+            system_prompt = system_prompts.resolve(system_prompt, settings.get(system_prompts.FIELD, ""), unique_id)
+        text = saved or _guided_text(
             task, model, prompt, resolution, duration, reference_material,
-            greedy, seed, keep_model_loaded, settings, progress, output_language,
-            system_prompt,
+            greedy, seed, keep_model_loaded, settings, progress,
+            system_prompt, language=output_language,
         )
+        if not saved:
+            text = _fix_once(
+                text, progress,
+                lambda extra: _guided_text(
+                    task, model, prompt + extra, resolution, duration, reference_material,
+                    greedy, seed, keep_model_loaded, settings, progress, system_prompt, language=output_language,
+                ),
+                OUTPUT_FIELDS, task=task, duration=duration, settings=settings,
+            )
         _head, sections = split_sections(text, OUTPUT_FIELDS)
-        _report(progress, text, sections, OUTPUT_FIELDS)
-        return (text,) + tuple(sections[name] for name in OUTPUT_FIELDS)
+        if not saved:
+            _report(
+                progress, text, sections, OUTPUT_FIELDS,
+                task=task, duration=duration, settings=settings,
+            )
+        outputs = (text,) + tuple(sections[name] for name in OUTPUT_FIELDS)
+        if not saved:
+            memory.keep(
+                unique_id, "MiniMaxH3GuidedWriter", outputs, given, fields=OUTPUT_FIELDS
+            )
+        return outputs
 
 
 class MiniMaxH3GuidedWriterRef:
@@ -1512,18 +2085,9 @@ class MiniMaxH3GuidedWriterRef:
                 ),
                 "resolution": (
                     list(RESOLUTIONS),
-                    {"default": "16:9", "tooltip": "Target aspect ratio the rewrite is composed for."},
+                    {"default": "16:9", "socketless": True, "tooltip": aspect.PICKER_TOOLTIP},
                 ),
-                "duration": (
-                    "INT",
-                    {
-                        "default": 10,
-                        "min": DURATION_MIN,
-                        "max": DURATION_MAX,
-                        "step": 1,
-                        "tooltip": "Target clip length in seconds; drives shot count and pacing.",
-                    },
-                ),
+                "duration": duration_widget(),
                 "greedy": (
                     "BOOLEAN",
                     {
@@ -1549,6 +2113,10 @@ class MiniMaxH3GuidedWriterRef:
                 ),
             },
             "optional": {
+                "aspect_ratio": (
+                    "STRING,COMBO",
+                    {"default": "", "widgetType": "STRING", "tooltip": aspect.TOOLTIP},
+                ),
                 "options": (OPTIONS_TYPE,),
                 "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_TOOLTIP}),
                 "output_language": _language_widget(),
@@ -1556,6 +2124,8 @@ class MiniMaxH3GuidedWriterRef:
                     "STRING",
                     {"multiline": True, "default": "", "tooltip": SYSTEM_PROMPT_TOOLTIP},
                 ),
+                "repeat_last": ("BOOLEAN", {"default": False, "tooltip": memory.REPEAT_TOOLTIP}),
+                "library_pick": ("STRING", {"default": "", "tooltip": library.PICK_TOOLTIP}),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -1564,6 +2134,23 @@ class MiniMaxH3GuidedWriterRef:
     RETURN_NAMES = ("rewritten_prompt",) + REF_OUTPUT_FIELDS
     FUNCTION = "write"
     CATEGORY = CATEGORY
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, model=None):
+        return valid_writer(model)
+
+    @classmethod
+    def IS_CHANGED(cls, library_pick="", repeat_last=False, unique_id=None, **kwargs):
+        """Whether what this node would hand back without running has changed.
+
+        Neither a record edited in the library window nor an answer edited in
+        the node's own memory touches a single input, so without this the
+        answer would come back out of ComfyUI's execution cache, still saying
+        what it said before the edit.
+        """
+        return library.stamp(library_pick, repeat_last) + memory.stamp(
+            unique_id, repeat_last
+        )
 
     def write(
         self,
@@ -1576,27 +2163,69 @@ class MiniMaxH3GuidedWriterRef:
         seed,
         keep_model_loaded,
         system_prompt="",
+        aspect_ratio=None,
         options=None,
         bypass=False,
+        repeat_last=False,
+        library_pick="",
         output_language=DEFAULT_OUTPUT_LANGUAGE,
         unique_id=None,
     ):
+        given = dict(locals())
         if bypass:
             return _bypassed(unique_id, prompt, REF_OUTPUT_FIELDS)
 
+        chosen, saved = library.picked(
+            library_pick, repeat_last, "MiniMaxH3GuidedWriterRef",
+            1 + len(REF_OUTPUT_FIELDS), unique_id, having=(),
+            keep_loaded=keep_model_loaded,
+        )
+        if chosen is not None:
+            return chosen
+
+        kept = memory.repeat(unique_id, "MiniMaxH3GuidedWriterRef", repeat_last and not saved, given)
+        if kept is not None:
+            return kept
+
+        resolution = aspect.resolve(aspect_ratio, resolution)
         settings = dict(DEFAULT_OPTIONS)
         if options:
             settings.update(options)
         progress = NodeProgress(unique_id)
+        shown = checks.typed_kinds(reference_assets)
 
-        text = _guided_text(
+        if not saved:
+            system_prompt = system_prompts.resolve(system_prompt, settings.get(system_prompts.FIELD, ""), unique_id)
+        text = saved or _guided_text(
             guide_prompt.REF_MODE, model, prompt, resolution, duration, reference_assets,
-            greedy, seed, keep_model_loaded, settings, progress, output_language,
-            system_prompt,
+            greedy, seed, keep_model_loaded, settings, progress,
+            system_prompt, language=output_language,
         )
+        if not saved:
+            text = _fix_once(
+                text, progress,
+                lambda extra: _guided_text(
+                    guide_prompt.REF_MODE, model, prompt + extra, resolution, duration,
+                    reference_assets, greedy, seed, keep_model_loaded, settings, progress,
+                    system_prompt, language=output_language,
+                ),
+                REF_OUTPUT_FIELDS, task=guide_prompt.REF_MODE, duration=duration,
+                having=shown, fallback="detailed_description", settings=settings,
+            )
         _head, sections = split_sections(text, REF_OUTPUT_FIELDS, fallback="detailed_description")
-        _report(progress, text, sections, REF_OUTPUT_FIELDS)
-        return (text,) + tuple(sections[name] for name in REF_OUTPUT_FIELDS)
+        if not saved:
+            _report(
+                progress, text, sections, REF_OUTPUT_FIELDS,
+                task=guide_prompt.REF_MODE, duration=duration, having=shown,
+                settings=settings,
+            )
+        outputs = (text,) + tuple(sections[name] for name in REF_OUTPUT_FIELDS)
+        if not saved:
+            memory.keep(
+                unique_id, "MiniMaxH3GuidedWriterRef", outputs, given,
+                task="Ref2VA", fields=REF_OUTPUT_FIELDS,
+            )
+        return outputs
 
 
 GUIDE_PROMPT_FORMATS = ("plain", "chatml")
@@ -1650,13 +2279,17 @@ class MiniMaxH3GuidePrompt:
                         "tooltip": "Ref2VA uses the full-reference guide and its six output sections.",
                     },
                 ),
-                "resolution": (list(RESOLUTIONS), {"default": "16:9"}),
-                "duration": (
-                    "INT",
-                    {"default": 10, "min": DURATION_MIN, "max": DURATION_MAX, "step": 1},
+                "resolution": (
+                    list(RESOLUTIONS),
+                    {"default": "16:9", "socketless": True, "tooltip": aspect.PICKER_TOOLTIP},
                 ),
+                "duration": duration_widget(),
             },
             "optional": {
+                "aspect_ratio": (
+                    "STRING,COMBO",
+                    {"default": "", "widgetType": "STRING", "tooltip": aspect.TOOLTIP},
+                ),
                 "reference_material": (
                     "STRING",
                     {
@@ -1709,15 +2342,17 @@ class MiniMaxH3GuidePrompt:
         resolution,
         duration,
         reference_material="",
+        aspect_ratio=None,
         auto_download=True,
         format="plain",
         output_language=DEFAULT_OUTPUT_LANGUAGE,
         unique_id=None,
     ):
+        resolution = aspect.resolve(aspect_ratio, resolution)
         progress = NodeProgress(unique_id)
         guide = guides.text(guide_prompt.GUIDE_FOR_MODE[task], auto_download, progress)
         messages = guide_prompt.build_messages(
-            guide, task, prompt, resolution, int(duration), reference_material, output_language
+            guide, task, prompt, resolution, float(duration), reference_material, output_language
         )
         system, user = messages[0]["content"], messages[1]["content"]
         joined = single_prompt(system, user, format)
@@ -1873,7 +2508,7 @@ def caption_question(
     return f"{question.text}{tongue} {NO_REASONING}"
 
 
-_ASSET_LINE = re.compile(r"^[ \t]*(Subject|Picture|Video|Audio)[ \t]+(\d+)[ \t]*:", re.IGNORECASE | re.MULTILINE)
+_ASSET_LINE = checks.ASSET_LINE
 
 #: What is left when a reasoning model spends the whole budget inside its
 #: ``<think>`` block and the answer is cut off before it starts. The reasoning
@@ -1934,7 +2569,8 @@ class MiniMaxH3ReferenceCaption:
                     {
                         "tooltip": (
                             "A multimodal GGUF and its projector. Entries prefixed 'on disk:' "
-                            "are pairs already in your ComfyUI model folders. Not every "
+                            "are pairs already in your ComfyUI model folders, 'ollama:' ones "
+                            "are vision models you pulled for Ollama. Not every "
                             "multimodal GGUF works: llama.cpp's mtmd has to understand the "
                             "projector, and some current models abort while loading it. Ignored "
                             "entirely while 'clip' is connected."
@@ -2023,6 +2659,10 @@ class MiniMaxH3ReferenceCaption:
                 ),
                 "options": (OPTIONS_TYPE,),
                 "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_CAPTION_TOOLTIP}),
+                "repeat_last": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": memory.REPEAT_CAPTION_TOOLTIP},
+                ),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -2031,6 +2671,10 @@ class MiniMaxH3ReferenceCaption:
     RETURN_NAMES = ("reference_assets", "caption")
     FUNCTION = "describe"
     CATEGORY = CATEGORY
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, model=None):
+        return valid_captioner(model)
 
     def describe(
         self,
@@ -2050,8 +2694,10 @@ class MiniMaxH3ReferenceCaption:
         context_size=mtmd_engine.CONTEXT_FROM_MODEL,
         options=None,
         bypass=False,
+        repeat_last=False,
         unique_id=None,
     ):
+        given = dict(locals())
         if bypass:
             NodeProgress(unique_id).finish("bypassed")
             return ((previous or "").strip(), "")
@@ -2062,6 +2708,12 @@ class MiniMaxH3ReferenceCaption:
         progress = NodeProgress(unique_id)
 
         caption = (description or "").strip()
+        kept = None if caption else memory.repeat(
+            unique_id, "MiniMaxH3ReferenceCaption", repeat_last, given
+        )
+        if kept is not None:
+            caption = str(kept[0])
+
         if not caption:
             if image is None and audio is None and video is None:
                 raise ValueError(
@@ -2100,7 +2752,7 @@ class MiniMaxH3ReferenceCaption:
                 else:
                     model_path, mmproj_path = _ensure_pair(
                         choice.reference, choice.file, choice.mmproj, "Captioner",
-                        settings["auto_download"], progress,
+                        settings, progress,
                     )
 
                 header = discovery.gguf_header(mmproj_path)
@@ -2137,14 +2789,23 @@ class MiniMaxH3ReferenceCaption:
                     auto_download=settings["auto_download"],
                     **cpu_settings(settings),
                     progress=progress,
+                    thinking=settings["captioner_thinking"],
                 )
+            if not caption.strip() and clip is None:
+                raise RuntimeError(
+                    "The captioner returned an empty description. Try captioner_thinking "
+                    "off with a supported llama-server, or another caption model."
+                )
+            memory.keep(
+                unique_id, "MiniMaxH3ReferenceCaption", (caption,), given, task="caption"
+            )
 
         caption = " ".join(caption.split())
         if not caption:
             raise RuntimeError(EMPTY_CAPTION_HINT)
         line = f"{role} {next_index(previous, role)}: {caption}"
         block = f"{(previous or '').rstrip()}\n{line}".strip()
-        progress.finish(line)
+        progress.finish(("repeat_last: " if kept is not None else "") + line)
         return (block, caption)
 
 

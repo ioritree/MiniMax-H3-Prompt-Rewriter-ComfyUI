@@ -30,19 +30,33 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 
 from comfy_api.latest import io
 
-from . import clip_caption, guide_prompt, media, mtmd_engine
+from . import (
+    aspect,
+    checks,
+    clip_caption,
+    discovery,
+    guide_prompt,
+    library,
+    media,
+    memory,
+    mtmd_engine,
+    previews,
+    refmods,
+    snapshot,
+    system_prompts,
+)
 from .constants import (
     DEFAULT_OUTPUT_LANGUAGE,
-    OUTPUT_FIELDS,
     OUTPUT_LANGUAGE_NAMES,
-    REF_OUTPUT_FIELDS,
     RESOLUTIONS,
+    duration_options,
 )
-from .fields import split_sections
+from .fields import ALL_FIELDS, split_sections
 from .nodes import (
     BYPASS_TOOLTIP,
     CAPTION_LENGTHS,
@@ -52,19 +66,33 @@ from .nodes import (
     OPTIONS_TYPE,
     OUTPUT_LANGUAGE_TOOLTIP,
     SYSTEM_PROMPT_TOOLTIP,
+    Question,
     _ensure_pair,
     _guided_text,
+    _fix_once,
     _report,
     _resolve_captioner_choice,
     caption_question,
     captioner_choices,
     cpu_settings,
+    named_verdicts,
     next_index,
     slot_instructions,
+    valid_captioner,
+    valid_writer,
     writer_choices,
 )
 from .multi_caption import _check_encoders
-from .progress import NodeProgress
+from .progress import NodeProgress, announce, refuse
+from .prompt_template_omni import FRAME_RATE, effective_duration
+from .references import (
+    SLOTS_OUTPUT_TOOLTIP,
+    SLOTS_TYPE,
+    clip_sounds,
+    pipeline_notes,
+    slot_bundle,
+    turn_order,
+)
 
 log = logging.getLogger(__name__)
 
@@ -85,18 +113,7 @@ IMAGE_ROLES = (ROLE_PICTURE, ROLE_SUBJECT, ROLE_VIDEO)
 
 FIXED_ROLE = {"video": ROLE_VIDEO, "audio": ROLE_AUDIO}
 
-ALL_FIELDS = (
-    OUTPUT_FIELDS[0],
-    *REF_OUTPUT_FIELDS[:4],
-    *OUTPUT_FIELDS[1:],
-)
-
-DURATION_MIN = 0.1
-DURATION_DEFAULT = 10.0
-
-DURATION_CEILING = 600.0
-DURATION_PROPERTY = "max_duration"
-DURATION_PROPERTY_DEFAULT = 30.0
+ROLE_KIND = {ROLE_PICTURE: "image", ROLE_VIDEO: "video", ROLE_AUDIO: "audio"}
 
 DESCRIPTION = (
     "Describes every connected reference and writes the finished MiniMax-H3 prompt, in one "
@@ -108,16 +125,18 @@ DESCRIPTION = (
 )
 
 LAYOUT_TOOLTIP = (
-    "The strip's state as JSON -- which squares are switched off, what order they are in, and "
-    "what each image is being used as. It is a widget so the arrangement travels with the "
-    "workflow and through the API; the interface draws it as squares instead. A slot missing "
-    "from it is on, in slot order, and used as a picture."
+    "The strip's state as JSON -- which squares are switched off, what order they are in, "
+    "what each image is being used as, and which clips have their own sound switched on as "
+    "well. It is a widget so the arrangement travels with the workflow and through the API; "
+    "the interface draws it as squares instead. A slot missing from it is on, in slot order, "
+    "and used as a picture, and a clip is silent."
 )
 
 REFERENCE_TOOLTIP = (
     "One image, clip or sound per slot; more slots appear as you fill them. What a reference "
     "is used for is set on its square in the strip below, not by which slot it is in -- so "
-    "there is no wrong socket to plug into here."
+    "there is no wrong socket to plug into here. A RefMod node's output goes in a slot too: "
+    "it is described from its pictures, and handed on as the RefMod."
 )
 
 TASK_TOOLTIP = (
@@ -127,22 +146,36 @@ TASK_TOOLTIP = (
     "Everything but T2VA opens with the alignment line, duration already filled in."
 )
 
-DURATION_TOOLTIP = (
-    "Target clip length in seconds; drives shot count and pacing. The slider's upper end is "
-    "the node's own 'max_duration' property (right-click, Properties Panel), 30 seconds until "
-    "you change it -- MiniMax's guide is written around clips of a few seconds, so a shorter "
-    "range is a more useful slider than a longer one."
+REFERENCES_OUTPUT_TOOLTIP = SLOTS_OUTPUT_TOOLTIP + (
+    "\n\nA picture whose badge calls it a subject goes after the pictures: the prompt never "
+    "calls it <Picture N>, so it must not take a number a picture is using. With a block on "
+    "'previous', the labels in that block are counted first and its references are not in "
+    "here."
 )
 
 
 @dataclass(frozen=True)
 class Asset:
-    """One connected, switched-on reference, ready to be described."""
+    """One connected, switched-on reference, ready to be described.
+
+    ``sound`` is for a clip whose own sound is a reference as well, which the
+    strip's label band switches; it is never set on anything but a VIDEO.
+
+    ``refmod`` is set for a RefMod, and ``value`` is then what it decodes to --
+    the picture, clip or sound that is described -- or None when nothing was
+    decoded. ``handed`` is what goes on to the generator: the RefMod itself.
+    """
 
     slot: str
     role: str
     kind: str
     value: object
+    sound: bool = False
+    refmod: object = None
+
+    @property
+    def handed(self):
+        return self.refmod if self.refmod is not None else self.value
 
 
 def kind_of(value) -> str:
@@ -164,6 +197,31 @@ def kind_of(value) -> str:
     return "video"
 
 
+def _layout_json(raw: str) -> dict:
+    """The strip's widget as a mapping, or an empty one for anything unreadable."""
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _layout_names(parsed: dict, key: str) -> list[str]:
+    found = parsed.get(key)
+    if not isinstance(found, list):
+        return []
+    return [name for name in found if isinstance(name, str)]
+
+
+def sounding(raw: str) -> set[str]:
+    """The clips whose own sound the strip has switched on as a reference.
+
+    Its own key in the widget, so a workflow saved before it existed reads as
+    every clip silent -- which is what those workflows were.
+    """
+    return set(_layout_names(_layout_json(raw), "sound"))
+
+
 def layout_of(raw: str) -> tuple[list[str], set[str], dict[str, str]]:
     """The strip's state: display order, switched-off slots, chosen image roles.
 
@@ -171,18 +229,10 @@ def layout_of(raw: str) -> tuple[list[str], set[str], dict[str, str]]:
     node treats a corrupted checkbox map: a broken widget should cost the layout,
     never the run.
     """
-    try:
-        parsed = json.loads(raw or "{}")
-    except (TypeError, ValueError):
-        parsed = {}
-    if not isinstance(parsed, dict):
-        parsed = {}
+    parsed = _layout_json(raw)
 
     def names(key: str) -> list[str]:
-        found = parsed.get(key)
-        if not isinstance(found, list):
-            return []
-        return [name for name in found if isinstance(name, str)]
+        return _layout_names(parsed, key)
 
     roles = parsed.get("roles")
     if not isinstance(roles, dict):
@@ -213,6 +263,7 @@ def arrange(supplied: dict | None, raw_layout: str) -> tuple[list[Asset], int]:
     """
     connected = {name: value for name, value in (supplied or {}).items() if value is not None}
     order, off, roles = layout_of(raw_layout)
+    heard = sounding(raw_layout)
 
     named = [name for name in order if name in connected]
     known = set(named)
@@ -224,25 +275,86 @@ def arrange(supplied: dict | None, raw_layout: str) -> tuple[list[Asset], int]:
         if name in off:
             skipped += 1
             continue
-        kind = kind_of(connected[name])
+        value = connected[name]
+        if refmods.is_refmod(value):
+            assets.append(_refmod_asset(name, value, roles.get(name)))
+            continue
+        kind = kind_of(value)
         role = FIXED_ROLE.get(kind) or roles.get(name, ROLE_PICTURE)
-        assets.append(Asset(name, role, kind, connected[name]))
+        sound = kind == "video" and name in heard
+        assets.append(Asset(name, role, kind, value, sound))
     return assets, skipped
 
 
-def refuse_mismatch(task: str, assets: list[Asset]) -> None:
+def _refmod_asset(name: str, mod, chosen: str | None) -> Asset:
+    """A RefMod's square: its kind from the file, its badge only where that is free.
+
+    The generator calls a RefMod what its file says it is, so the label has to
+    say the same. A clip or a stack of photos is a ``<Video N>`` and a voice an
+    ``<Audio N>`` whatever the badge reads; a picture may still be a subject,
+    which the generator numbers as a picture too, but never a clip. Its own
+    sound is never counted: a RefMod carries none.
+    """
+    role = FIXED_ROLE.get(mod.kind)
+    if role is None:
+        role = chosen if chosen == ROLE_SUBJECT else ROLE_PICTURE
+    return Asset(name, role, mod.kind, mod.view, False, mod)
+
+
+def _with_saved(question: Question | None, mod) -> Question | None:
+    """A slot's own question, with what a RefMod's file says of it after it."""
+    saved = refmods.hint(mod)
+    if not saved:
+        return question
+    if question is None:
+        return Question(saved, True)
+    return Question(f"{question.text} {saved}", question.add)
+
+
+def refuse_unseen(assets: list[Asset], node_id=None) -> None:
+    """Stop before any weights move if a RefMod has nothing to describe it from.
+
+    A voice that was never decoded can still be written from the description
+    saved with it; a look with no pictures cannot be written from anything.
+    """
+    for asset in assets:
+        if asset.refmod is not None:
+            problem = refmods.unseen(asset.slot, asset.refmod, saved_ok=True)
+            if problem:
+                refuse(node_id, problem)
+
+
+def refuse_mismatch(task: str, assets: list[Asset], node_id=None) -> None:
     """Stop before any weights move if the task and the strip disagree.
 
-    Both messages name the strip rather than the sockets, because the strip is
+    Every message names the strip rather than the sockets, because the strip is
     where the fix is: a reference that is in the way is switched off or given a
-    different badge, not unplugged.
+    different badge, not unplugged. Each one is also said as a toast on the way
+    out, since a refusal that only reaches the console is a run that looks like
+    it failed for no reason.
     """
     if task == REF_TASK:
         if not assets:
-            raise ValueError(
+            refuse(
+                node_id,
                 "Ref2VA writes about reference assets the target video reuses, so it needs at "
                 "least one. Connect an image, a clip or a sound and switch its square on in the "
-                "strip -- or pick a task that writes from text alone."
+                "strip -- or pick a task that writes from text alone.",
+            )
+        counts = {}
+        for asset in assets:
+            counts[asset.role] = counts.get(asset.role, 0) + 1
+        too_many = checks.over_capacity(task, counts)
+        if too_many:
+            listed = "; and ".join(
+                f"{count} {word.lower()}(s) where {task} takes {allowed}"
+                for word, count, allowed in too_many
+            )
+            refuse(
+                node_id,
+                f"The strip has {listed}. H3 has nowhere to put the extra ones, so "
+                f"switch those squares off -- or, for a picture, click its badge to "
+                f"call it a subject, which is counted separately.",
             )
         return
 
@@ -252,16 +364,104 @@ def refuse_mismatch(task: str, assets: list[Asset]) -> None:
         return
 
     if len(pictures) > wanted:
-        raise ValueError(
+        refuse(
+            node_id,
             f"{task} is written from {wanted} picture(s), and the strip has {len(pictures)}. "
             f"Switch the extra squares off, or click a badge to call one a subject or a clip: "
-            f"those are reference material rather than frames, and they are not counted here."
+            f"those are reference material rather than frames, and they are not counted here.",
         )
-    raise ValueError(
+    refuse(
+        node_id,
         f"{task} is written from {wanted} picture(s), and the strip has {len(pictures)}. "
         f"Connect the missing image, switch its square back on, or click a badge to turn a "
-        f"subject back into a picture."
+        f"subject back into a picture.",
     )
+
+
+def refuse_deaf(sounds: dict, mmproj_path=None, clip=None, node_id=None) -> None:
+    """Stop before any weights move if a clip's sound is on and the captioner cannot hear.
+
+    The sound would otherwise reach the block as a label with nothing after it,
+    and the writer would be told a sound exists and not what it is. The fix is
+    named both ways, because either is right: a captioner that hears, or the
+    clip's sound switched back off.
+    """
+    if not sounds:
+        return
+    if clip is not None:
+        if clip_caption.capabilities(clip)["audio"]:
+            return
+        deaf = "the model on 'clip' has no audio path"
+    else:
+        if discovery.gguf_header(mmproj_path).get("audio"):
+            return
+        deaf = f"'{os.path.basename(mmproj_path)}' was built without an audio encoder"
+    listed = ", ".join(f"'{slot}'" for slot in sounds)
+    refuse(
+        node_id,
+        f"The sound of {listed} is switched on, and {deaf}, so nothing could describe it. "
+        f"Pick a captioner whose label lists 'audio', or click the clip's label band in "
+        f"the strip to switch its sound off.",
+    )
+
+
+def in_turn(assets: list[Asset], sounds: dict) -> list[tuple[Asset, Asset | None]]:
+    """The assets in the order they are described, a clip's sound in front of it.
+
+    Each step is ``(what is described, the clip it is the sound of)``, the
+    second None for everything but a clip's sound. The order is
+    ``references.turn_order``'s: it is what makes a clip's sound take the
+    ``<Audio N>`` the generator gives it.
+    """
+    steps: list[tuple[Asset, Asset | None]] = []
+    for index, is_sound in turn_order((asset.role, asset.slot in sounds) for asset in assets):
+        asset = assets[index]
+        if is_sound:
+            sound = Asset(f"{asset.slot} (sound)", ROLE_AUDIO, "audio", sounds[asset.slot])
+            steps.append((sound, asset))
+        else:
+            steps.append((asset, None))
+    return steps
+
+
+def partners(steps, block: str) -> dict[str, tuple[object, str]]:
+    """For each RefMod whose entry's other half is on the strip: that half and its label.
+
+    The labels are counted here as the description loop counts them, ahead of
+    it, because a voice may be described before the look it names.
+    """
+    taken: dict[str, int] = {}
+    labels, held = {}, {}
+    for asset, _clip in steps:
+        if asset.role not in taken:
+            taken[asset.role] = next_index(block, asset.role) - 1
+        taken[asset.role] += 1
+        labels[asset.slot] = f"{asset.role} {taken[asset.role]}"
+        if asset.refmod is not None:
+            held[asset.slot] = asset.refmod
+    return {
+        slot: (held[other], labels[other])
+        for slot, other in refmods.halves(held.items()).items()
+    }
+
+
+def within(asset: Asset, frames: int) -> Asset:
+    """A frame batch read as a clip, cut to the frames the generator keeps of it.
+
+    MiniMaxH3ReferenceToVideo takes a reference clip's frames as they come and
+    drops every one past the length of the video it makes, and LightX2V's runner
+    does the same. A description of the rest describes nothing H3 is shown. A
+    VIDEO is cut where it is decoded, by ``max_seconds``; this is the same cut
+    for a batch, which has no clock and is counted in frames.
+
+    ``frames`` of 0 leaves everything as it came.
+    """
+    if frames <= 0 or asset.role != ROLE_VIDEO or asset.kind != "image":
+        return asset
+    shape = getattr(asset.value, "shape", None)
+    if shape is None or len(shape) != 4 or int(shape[0]) <= frames:
+        return asset
+    return replace(asset, value=asset.value[:frames])
 
 
 def _clip_note(asset: Asset, max_frames: int) -> str:
@@ -297,10 +497,10 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
                     template=io.Autogrow.TemplatePrefix(
                         input=io.MultiType.Input(
                             "ref",
-                            types=[io.Image, io.Video, io.Audio],
+                            types=[io.Image, io.Video, io.Audio, io.Custom(refmods.TYPE)],
                             tooltip=(
-                                "An image or batch of frames, a clip, or a sound. Its square "
-                                "appears in the strip as soon as it is connected."
+                                "An image or batch of frames, a clip, a sound, or a RefMod. Its "
+                                "square appears in the strip as soon as it is connected."
                             ),
                         ),
                         prefix="ref_",
@@ -344,17 +544,16 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
                     "resolution",
                     options=list(RESOLUTIONS),
                     default="16:9",
-                    tooltip="Target aspect ratio the rewrite is composed for.",
+                    socketless=True,
+                    tooltip=aspect.PICKER_TOOLTIP,
                 ),
-                io.Float.Input(
-                    "duration",
-                    default=DURATION_DEFAULT,
-                    min=DURATION_MIN,
-                    max=DURATION_CEILING,
-                    step=0.1,
-                    round=0.1,
-                    display_mode=io.NumberDisplay.slider,
-                    tooltip=DURATION_TOOLTIP,
+                io.MultiType.Input(
+                    io.Float.Input(
+                        "duration",
+                        display_mode=io.NumberDisplay.slider,
+                        **duration_options(),
+                    ),
+                    types=[io.Int],
                 ),
                 io.String.Input(
                     "prompt",
@@ -371,7 +570,8 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
                     options=captioner_choices(),
                     tooltip=(
                         "The multimodal GGUF that reads the references, with its projector. "
-                        "Entries prefixed 'on disk:' are pairs already in your model folders. "
+                        "Entries prefixed 'on disk:' are pairs already in your model folders, "
+                        "'ollama:' ones come from your Ollama store. "
                         "One model reads every reference here, so it has to cover every kind "
                         "you connected. Unused while 'clip' is connected, or on T2VA."
                     ),
@@ -466,14 +666,58 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
                     optional=True,
                     tooltip=SYSTEM_PROMPT_TOOLTIP,
                 ),
+                io.MultiType.Input(
+                    io.String.Input(
+                        "aspect_ratio",
+                        optional=True,
+                        default="",
+                        tooltip=aspect.TOOLTIP,
+                    ),
+                    types=[io.String, io.Combo],
+                ),
+                io.Boolean.Input(
+                    "repeat_last",
+                    default=False,
+                    optional=True,
+                    tooltip=memory.REPEAT_TOOLTIP,
+                ),
+                io.String.Input(
+                    "library_pick",
+                    default="",
+                    optional=True,
+                    tooltip=library.PICK_TOOLTIP,
+                ),
             ],
             outputs=[
                 io.String.Output(display_name="rewritten_prompt"),
                 *(io.String.Output(display_name=name) for name in ALL_FIELDS),
                 io.String.Output(display_name="reference_assets"),
                 io.String.Output(display_name="captions"),
+                io.Custom(SLOTS_TYPE).Output(
+                    display_name="references", tooltip=REFERENCES_OUTPUT_TOOLTIP
+                ),
             ],
             hidden=[io.Hidden.unique_id],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, library_pick="", repeat_last=False, **kwargs):
+        """Whether what this node would hand back without running has changed.
+
+        Neither a record edited in the library window nor an answer edited in
+        the node's own memory touches a single input, so without this the
+        answer would come back out of ComfyUI's execution cache, still saying
+        what it said before the edit.
+        """
+        return library.stamp(library_pick, repeat_last) + memory.stamp(
+            getattr(getattr(cls, "hidden", None), "unique_id", None), repeat_last
+        )
+
+    @classmethod
+    def validate_inputs(cls, caption_model=None, writer_model=None, references=None):
+        return named_verdicts(
+            ("caption_model", valid_captioner(caption_model)),
+            ("writer_model", valid_writer(writer_model)),
         )
 
     @classmethod
@@ -499,21 +743,68 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
         max_frames=media.DEFAULT_MAX_FRAMES,
         context_size=mtmd_engine.CONTEXT_FROM_MODEL,
         bypass=False,
+        aspect_ratio=None,
+        repeat_last=False,
+        library_pick="",
         output_language=DEFAULT_OUTPUT_LANGUAGE,
     ) -> io.NodeOutput:
+        given = dict(locals())
         progress = NodeProgress(cls.hidden.unique_id)
         block = (previous or "").strip()
         empty = ("",) * len(ALL_FIELDS)
 
+        assets, skipped = arrange(references, reference_layout)
+        previews.announce(
+            cls.hidden.unique_id,
+            ((name, refmods.seen(value)) for name, value in (references or {}).items()),
+        )
+        handed_on = slot_bundle(
+            ()
+            if task == TEXT_TASK
+            else (
+                (item.slot, item.role, item.handed, item.sound and task == REF_TASK)
+                for item in assets
+            )
+        )
+
         if bypass:
             progress.finish("bypassed")
-            return io.NodeOutput((prompt or "").strip(), *empty, block, "")
+            return io.NodeOutput((prompt or "").strip(), *empty, block, "", handed_on)
+
+        chosen, saved = library.picked(
+            library_pick, repeat_last, "MiniMaxH3UniversalWriter", 1 + len(ALL_FIELDS) + 2,
+            cls.hidden.unique_id, having=[item.kind for item in assets],
+            keep_loaded=keep_model_loaded,
+        )
+        if chosen is not None:
+            return io.NodeOutput(*chosen, handed_on)
+        if saved:
+            _head, sections = split_sections(
+                saved, guide_prompt.FIELDS_FOR_MODE[task],
+                fallback=guide_prompt.BODY_FIELD[task],
+            )
+            return io.NodeOutput(
+                saved,
+                *(sections.get(name, "") for name in ALL_FIELDS),
+                block,
+                "",
+                handed_on,
+            )
+
+        kept = memory.repeat(
+            cls.hidden.unique_id, "MiniMaxH3UniversalWriter", repeat_last, given
+        )
+        if kept is not None:
+            return io.NodeOutput(*kept, handed_on)
+
+        resolution = aspect.resolve(aspect_ratio, resolution)
 
         settings = dict(DEFAULT_OPTIONS)
         if options:
             settings.update(options)
-
-        assets, skipped = arrange(references, reference_layout)
+        system_prompt = system_prompts.resolve(
+            system_prompt, settings.get(system_prompts.FIELD, ""), cls.hidden.unique_id,
+        )
 
         if task == TEXT_TASK:
             if assets or block:
@@ -523,119 +814,203 @@ class MiniMaxH3UniversalWriter(io.ComfyNode):
                 )
                 log.info("[minimax_h3_rewriter.universal] %s", note)
                 progress.text(note, force=True)
+                announce(cls.hidden.unique_id, [("warn", note)])
             assets = []
         else:
-            refuse_mismatch(task, assets)
+            refuse_mismatch(task, assets, cls.hidden.unique_id)
+            refuse_unseen(assets, cls.hidden.unique_id)
+            notes = pipeline_notes(
+                task, ((asset.slot, asset.role, asset.value) for asset in assets)
+            )
+            if notes:
+                log.warning("[minimax_h3_rewriter.universal] %s", " ".join(notes))
+                progress.text("\n".join(notes), force=True)
+                announce(cls.hidden.unique_id, [("warn", note) for note in notes])
+
+        sounds = {}
+        if task == REF_TASK:
+            sounds, idle = clip_sounds(assets)
+            if idle:
+                log.warning("[minimax_h3_rewriter.universal] %s", idle)
+                announce(cls.hidden.unique_id, [("warn", idle)])
 
         captions: list[str] = []
         empty: list[str] = []
         if assets:
-            kinds = {asset.kind for asset in assets}
+            steps = in_turn(assets, sounds)
+            paired = partners(steps, block)
+            read = [step for step, _clip in steps if step.value is not None]
+            kinds = {step.kind for step in read}
             model_path = mmproj_path = None
-            if clip is None:
+            if read and clip is None:
                 choice = _resolve_captioner_choice(caption_model)
                 if choice.local:
                     model_path, mmproj_path = choice.reference, choice.mmproj
                 else:
                     model_path, mmproj_path = _ensure_pair(
                         choice.reference, choice.file, choice.mmproj, "Captioner",
-                        settings["auto_download"], progress,
+                        settings, progress,
                     )
+                refuse_deaf(sounds, mmproj_path=mmproj_path, node_id=cls.hidden.unique_id)
                 _check_encoders(mmproj_path, kinds)
-            else:
+            elif read:
+                refuse_deaf(sounds, clip=clip, node_id=cls.hidden.unique_id)
                 clip_caption.check(clip, kinds)
 
             asked_for = slot_instructions(reference_instructions)
+            target_frames = effective_duration(duration)[0] if task == REF_TASK else 0
 
-            progress.set_total(len(assets))
-            for done, asset in enumerate(assets):
-                index = next_index(block, asset.role)
-                progress.update(
-                    done,
-                    f"{asset.role} {index}: reading {asset.slot} ({done + 1} of {len(assets)})",
-                )
-
-                asked = caption_question(
-                    asset.role, caption_length, asked_for.get(asset.slot)
-                )
-                note = _clip_note(asset, max_frames)
-                if note:
-                    asked = f"{note}\n\n{asked}"
-
-                as_image = asset.value if asset.kind == "image" else None
-                as_audio = asset.value if asset.kind == "audio" else None
-                as_video = asset.value if asset.kind == "video" else None
-
-                if clip is not None:
-                    caption = clip_caption.describe(
-                        clip,
-                        instruction=asked,
-                        image=as_image,
-                        audio=as_audio,
-                        video=as_video,
-                        max_frames=int(max_frames),
-                        seed=int(seed),
-                        settings=settings,
-                        progress=progress,
-                    )
-                else:
-                    caption = mtmd_engine.describe(
-                        model_path=model_path,
-                        mmproj_path=mmproj_path,
-                        instruction=asked,
-                        image=as_image,
-                        audio=as_audio,
-                        video=as_video,
-                        max_frames=int(max_frames),
-                        gpu_layers=int(settings["gpu_layers"]),
-                        n_ctx=int(context_size),
-                        seed=int(seed),
-                        greedy=True,
-                        max_new_tokens=min(int(settings["max_new_tokens"]), 1024),
-                        temperature=float(settings["temperature"]),
-                        top_p=float(settings["top_p"]),
-                        top_k=int(settings["top_k"]),
-                        device=settings["device"],
-                        backend=settings["llama_backend"],
-                        auto_download=settings["auto_download"],
-                        **cpu_settings(settings),
-                        progress=progress,
+            with mtmd_engine.session(
+                model_path or "", mmproj_path or "",
+                assets=len(read),
+                attachments=mtmd_engine.busiest(
+                    (step.kind for step in read), int(max_frames)
+                ),
+                gpu_layers=int(settings["gpu_layers"]),
+                n_ctx=int(context_size),
+                device=settings["device"],
+                backend=settings["llama_backend"],
+                auto_download=settings["auto_download"],
+                progress=progress,
+                thinking=settings["captioner_thinking"],
+            ) as batch:
+                progress.set_total(len(steps))
+                for done, (asset, of_clip) in enumerate(steps):
+                    asset = within(asset, target_frames)
+                    index = next_index(block, asset.role)
+                    progress.update(
+                        done,
+                        f"{asset.role} {index}: reading {asset.slot} ({done + 1} of {len(steps)})",
                     )
 
-                caption = " ".join(caption.split())
-                if not caption:
-                    empty.append(f"{asset.role} {index} ({asset.slot})")
-                    log.warning(
-                        "[minimax_h3_rewriter.universal] %s came back with an empty caption",
-                        asset.slot,
-                    )
-                captions.append(caption)
-                block = f"{block}\n{asset.role} {index}: {caption}".strip()
+                    question = None if of_clip is not None else asked_for.get(asset.slot)
+                    if asset.refmod is not None:
+                        question = _with_saved(question, asset.refmod)
+                    asked = caption_question(asset.role, caption_length, question)
+                    note = _clip_note(asset, max_frames)
+                    if note:
+                        asked = f"{note}\n\n{asked}"
 
-            described = f"{len(assets)} described"
+                    as_image = asset.value if asset.kind == "image" else None
+                    as_audio = asset.value if asset.kind == "audio" else None
+                    as_video = asset.value if asset.kind == "video" else None
+
+                    if asset.value is None:
+                        caption = refmods.saved_caption(asset.refmod)
+                    elif clip is not None:
+                        caption = clip_caption.describe(
+                            clip,
+                            instruction=asked,
+                            image=as_image,
+                            audio=as_audio,
+                            video=as_video,
+                            max_frames=int(max_frames),
+                            seed=int(seed),
+                            settings=settings,
+                            progress=progress,
+                            max_seconds=target_frames / FRAME_RATE,
+                        )
+                    else:
+                        caption = mtmd_engine.describe(
+                            model_path=model_path,
+                            mmproj_path=mmproj_path,
+                            instruction=asked,
+                            image=as_image,
+                            audio=as_audio,
+                            video=as_video,
+                            max_frames=int(max_frames),
+                            gpu_layers=int(settings["gpu_layers"]),
+                            n_ctx=int(context_size),
+                            seed=int(seed),
+                            greedy=True,
+                            max_new_tokens=min(int(settings["max_new_tokens"]), 1024),
+                            temperature=float(settings["temperature"]),
+                            top_p=float(settings["top_p"]),
+                            top_k=int(settings["top_k"]),
+                            device=settings["device"],
+                            backend=settings["llama_backend"],
+                            auto_download=settings["auto_download"],
+                            **cpu_settings(settings),
+                            progress=progress,
+                            server=batch,
+                            thinking=settings["captioner_thinking"],
+                            allow_server=False,
+                            max_seconds=target_frames / FRAME_RATE,
+                        )
+
+                    caption = " ".join(caption.split())
+                    if not caption and clip is None:
+                        raise RuntimeError(
+                            f"{asset.role} {index}: the GGUF captioner returned an empty "
+                            "description. Try captioner_thinking off with a supported "
+                            "llama-server, or another caption model."
+                        )
+                    if not caption:
+                        empty.append(f"{asset.role} {index} ({asset.slot})")
+                        log.warning(
+                            "[minimax_h3_rewriter.universal] %s came back with an empty caption",
+                            asset.slot,
+                        )
+                    captions.append(caption)
+                    line = caption
+                    if of_clip is not None:
+                        line = f"(the sound of Video {next_index(block, ROLE_VIDEO)}) {caption}"
+                    elif asset.refmod is not None:
+                        partner, label = paired.get(asset.slot, (None, ""))
+                        line = (refmods.writer_note(asset.refmod, partner, label) + caption).strip()
+                    block =f"{block}\n{asset.role} {index}: {line}".strip()
+
+            described = f"{len(steps)} described"
             if skipped:
                 described += f", {skipped} switched off"
             if empty:
-                described = (
-                    f"WARNING: nothing came back for {', '.join(empty)}. Those labels are in "
+                silence = (
+                    f"nothing came back for {', '.join(empty)}. Those labels are in "
                     f"the block with nothing after them, so the writer has been told an asset "
-                    f"exists and not what it is -- try another captioner.\n" + described
+                    f"exists and not what it is -- try another captioner."
                 )
+                described = f"WARNING: {silence}\n{described}"
+                announce(cls.hidden.unique_id, [("warn", silence)])
             progress.update(len(assets), f"{described}\n{block}")
 
         material = "" if task == TEXT_TASK else block
+        shown = checks.block_kinds(material)
         text = _guided_text(
             task, writer_model, prompt, resolution, duration, material,
-            greedy, seed, keep_model_loaded, settings, progress, output_language,
-            system_prompt,
+            greedy, seed, keep_model_loaded, settings, progress,
+            system_prompt, language=output_language,
         )
 
         names = guide_prompt.FIELDS_FOR_MODE[task]
+        text = _fix_once(
+            text, progress,
+            lambda extra: _guided_text(
+                task, writer_model, prompt + extra, resolution, duration, material,
+                greedy, seed, keep_model_loaded, settings, progress, system_prompt, language=output_language,
+            ),
+            names, task=task, duration=duration,
+            having=shown,
+            fallback=guide_prompt.BODY_FIELD[task], settings=settings,
+        )
         _head, sections = split_sections(text, names, fallback=guide_prompt.BODY_FIELD[task])
-        _report(progress, text, sections, names)
+        _report(
+            progress, text, sections, names,
+            task=task, duration=duration,
+            having=shown,
+            settings=settings,
+        )
 
         fields = tuple(sections.get(name, "") for name in ALL_FIELDS)
-        return io.NodeOutput(text, *fields, block, "\n".join(captions))
+        outputs = (text,) + fields + (block, "\n".join(captions))
+        memory.keep(
+            cls.hidden.unique_id, "MiniMaxH3UniversalWriter", outputs, given,
+            references=snapshot.take(
+                (item.slot, item.kind, item.value, ROLE_KIND.get(item.role, ""))
+                for item in assets
+            ),
+            fields=ALL_FIELDS,
+        )
+        return io.NodeOutput(*outputs, handed_on)
 
 
 NODE_CLASS_MAPPINGS = {

@@ -120,6 +120,8 @@ SUBDIR = "runtime"
 
 MTMD_BINARIES = (f"llama-mtmd-cli{EXE}",)
 
+SERVER_BINARIES = (f"llama-server{EXE}",)
+
 
 #: Compute capabilities the CUDA archive actually carries code for.
 #:
@@ -313,11 +315,11 @@ def asset_size(name: str) -> int:
     HEAD follows the redirect to release-assets.githubusercontent.com, carries
     no rate limit, and comes from the same place the bytes will.
     """
-    import requests
+    from . import download
 
     try:
-        response = requests.head(
-            f"{DOWNLOAD_URL}/{name}", allow_redirects=True, timeout=(15, 30)
+        response = download.http(
+            "HEAD", f"{DOWNLOAD_URL}/{name}", allow_redirects=True, timeout=(15, 30)
         )
         if response.status_code >= 400:
             return 0
@@ -691,3 +693,29 @@ def ensure_mtmd(backend: str, auto_download: bool, progress=None) -> str:
             f"llama.cpp."
         )
     return binary
+
+
+def server_beside(captioner: str) -> str:
+    """``llama-server`` from the same build as ``captioner``, or "" if absent.
+
+    Deliberately none of the searching the two functions above do. Those resolve
+    a runtime the node cannot work without, so they look in five places and
+    download when all five come up empty. This one resolves a runtime the node
+    is merely faster with, and a search that ranged wider could pair the model
+    with a *different* build's server -- an older llama.cpp whose mtmd cannot
+    read the projector this one just accepted. Beside the captioner, or not at
+    all: an empty answer costs a caption run its speed and nothing else.
+    """
+    if not captioner:
+        return ""
+    directory = os.path.dirname(os.path.abspath(captioner))
+    for name in SERVER_BINARIES:
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate):
+            return _announce(candidate, "captioning server")
+    log.info(
+        "[minimax_h3_rewriter.llamacpp.server_beside] no %s beside %s: references will be "
+        "described one process at a time",
+        SERVER_BINARIES[0], captioner,
+    )
+    return ""

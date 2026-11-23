@@ -26,8 +26,8 @@ import logging
 import os
 import tempfile
 
-from . import chat_template, devices, discovery, llamacpp, runner
-from .constants import normalize_seed
+from . import chat_template, checks, devices, discovery, llamacpp, runner
+from .constants import EMPTY_ANSWER_HINT, normalize_seed
 from .progress import NodeProgress
 
 log = logging.getLogger(__name__)
@@ -177,13 +177,18 @@ def generate(
             f"Loading {name}{note}\nllama.cpp binary{where}, {gpu_layers} GPU layers", force=True
         )
 
-    def report(whole: str) -> None:
-        if progress is None:
-            return
-        progress.update(
-            min(len(whole) / CHARS_PER_TOKEN, float(max_new_tokens)),
-            f"Generating · {len(whole)} chars\n{whole[-PREVIEW_TAIL:]}",
-        )
+    def report(whole: str) -> bool:
+        """Drive the bar, and say whether this answer has started cycling.
+
+        The check runs whether or not there is a progress bar to draw: a run
+        that has begun repeating is worth stopping on a headless call too.
+        """
+        if progress is not None:
+            progress.update(
+                min(len(whole) / CHARS_PER_TOKEN, float(max_new_tokens)),
+                f"Generating · {len(whole)} chars\n{whole[-PREVIEW_TAIL:]}",
+            )
+        return bool(checks.looping(whole))
 
     try:
         text, stderr_text = runner.run(command, binary, report)
@@ -205,6 +210,15 @@ def generate(
             os.unlink(prompt_file)
         except OSError:
             log.debug("[minimax_h3_rewriter.cli.generate] could not remove %s", prompt_file)
+
+    if not text:
+        tail = "\n".join(stderr_text.splitlines()[-runner.STDERR_TAIL:])
+        raise RuntimeError(
+            f"{os.path.basename(model_path)} wrote nothing: {os.path.basename(binary)} "
+            f"finished without an error and without a word of answer, so there is no "
+            f"prompt to hand on. {EMPTY_ANSWER_HINT}\n"
+            f"Last output from {os.path.basename(binary)}:\n{tail}"
+        )
 
     if progress is not None:
         progress.finish(f"Done · {len(text)} chars{runner.speed(stderr_text)}")

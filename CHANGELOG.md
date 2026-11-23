@@ -6,170 +6,1838 @@ The version in `pyproject.toml`, the git tag and the release on GitHub always sa
 the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that neither changelog has a section for.
 
-## Unreleased — local, not a release
-
-Changes living in this working copy only. `pyproject.toml` stays on the
-upstream version: nothing here has been tagged, and claiming a version that
-upstream has not cut would make a version comparison read this checkout as
-newer than the repo it came from. If any of it goes upstream, the heading
-becomes a real version there.
+## 0.36.0 - 2026-11-20
 
 ### Added
 
-- **`cache_type` and `flash_attn` beside them**, for the run that does not quite
-  fit. `q8_0` halves the KV cache; flash attention shrinks the compute buffer
-  next to it. Neither touches the weights, which is the point: on a card already
-  doing partial offload the freed VRAM becomes another layer or two that does not
-  have to run on the CPU. Both default to `default`, which passes no flag at all.
+- MiniMax-H3 Image Prompt Writer expands text-to-image and edit requests with up to 16 ordered image references. Connect its prompt and canvas dimensions to MiniMax H3 Image Conditioning.
+- Image prompt expansion can use Local CLIP, a Local GGUF model, a Chat Completions model through API Writer, or MiniMax Context IR. Local GGUF uses a vision model with its matching projector for Image Edit.
+- **System prompts...** in Rewriter Options, API Writer Options and Qwen Rewriter Options saves reusable guides. Create one from scratch, copy the default guide or import a UTF-8 `.md` or `.txt` file. The selected file applies when the writer's `system_prompt` is empty.
 
-  Worth being clear about when they are *not* the answer. The cache is charged
-  per token and the weights are not: a 27B at Q4 is 15.4 GiB of weights against
-  0.25 GiB of cache at 1024 tokens, so halving the small number rescues nothing.
-  These are for the last gigabyte, not the first six.
+## 0.35.0 - 2026-11-12
 
-- **An allocation failure now says which of the two overflowed.** Both routes
-  printed a note about `context_size`, which is the right answer when the KV
-  cache did not fit and a dead end when the weights did not -- and the second is
-  the common case on a small card, because a model bigger than the card stays
-  bigger than the card at every context size. Somebody with that problem follows
-  the advice down to 512 tokens and watches it fail identically, which is exactly
-  what happened to the reader who prompted this.
+### Added
 
-  `discovery.vram_note` does the arithmetic off the run's own files -- the card
-  from torch, the weights from the file, the cache from the GGUF header -- and
-  says it in numbers: *the weights alone are bigger than the card: 15.4 GiB
-  against 11.2 GiB, about 6.2 GiB too much... taking the context to zero would
-  not free 6.2 GiB. That is why lowering it changes nothing here.* Then it names
-  `gpu_layers`, which the multimodal note never mentioned at all, and says how
-  many layers this model would fit.
-
-  It runs inside a failure handler, so every part of it is guarded: anything
-  unreadable falls back to the old text rather than replacing a real error with
-  an error of its own.
-
-- **`threads` and `poll` on the options node**, which is what a full-offload run
-  needs and never had. This pack always asks llama.cpp for every layer -- that is
-  deliberate, and there is a note in `mtmd_engine` explaining why letting it fit
-  the run itself measures 20x slower -- but neither command builder ever passed
-  `--threads` or `--poll`. So llama.cpp used its own defaults: one thread per
-  core, and polling level 50, which is a busy-wait. The graph runs on the card
-  while the CPU threadpool spins waiting for it, and on a many-core machine that
-  reads as near-full CPU load for work nobody is doing.
-
-  Both default to `-1`, meaning "say nothing", so a workflow saved before these
-  existed sends the command line it always sent. `threads 4` and `poll 0` are
-  the pair worth trying when everything is on the GPU. They are not free on a run
-  that *does* keep layers on the CPU, which is why neither is the default.
-
-  `--poll` is a threadpool setting the official binaries expose and
-  llama-cpp-python does not publish at all, so the wheel route gets the thread
-  count alone -- and takes it at construction, so it is part of the load cache
-  key rather than a per-call argument.
-
-  Not to be confused with `--n-cpu-moe`, which was what prompted the look: that
-  keeps a *MoE* model's expert weights in system RAM to save VRAM, deliberately
-  moving work onto the CPU. Every base this pack ships is dense -- Qwen3.6-27B,
-  Qwen3-VL-8B, Qwen2.5-Omni-7B, and every writer and captioner in the list -- so
-  the flag has no tensors to match and would do nothing here, and where it does
-  something it raises CPU load rather than lowering it.
-
-- **`output_language` reaches the Omni rewriter too.** Upstream 0.17.0 added
-  `MiniMax-H3 Prompt Rewriter Omni` and an Omni tab on the Universal Rewriter,
-  both of which arrived English-only; the widget is on both now, and
-  `prompt_template_omni` grew the same three language bullets the 8B adapter
-  is given - overrule the trained "write all sections in English" line by
-  quoting it back, keep structure and labels English, keep dialogue verbatim.
-  The label list is longer there, because Ref2AV also numbers `<Subject N>`,
-  `<Video N>` and `<Audio N>`.
-
-  `caption_question`, which upstream introduced in 0.16.6 to hold the
-  per-reference instructions, takes the language as well, so a replaced
-  question - which drops the length preset - still gets answered in the chosen
-  language.
-
-- **Per-reference instructions on `Reference Writer (Ref2VA)`.** Upstream's
-  0.16.6 strip band is drawn for this node too rather than only for
-  `Multi Reference Caption`, and the `reference_instructions` widget behind it
-  exists here now, so the text travels with the workflow. One JS file hooks
-  both node types; upstream's `multi_caption_switch.js` deletion is taken as
-  it stands.
-
-- **`MiniMax-H3 Reference Writer (Ref2VA)`, the reading and the writing in one
-  node.** `Multi Reference Caption` turns the pixels into text and
-  `Prompt Writer (Ref2VA)` turns that text into the six sections; between them
-  runs a single `reference_assets` wire. Once one model is good enough for both
-  halves - a multimodal GGUF that also follows the writing guide - that wire is
-  the only thing separating two nodes that always run together, each with its
-  own options block, its own seed and its own output language to keep in step.
-  This node is those two with the wire pulled out.
-
-  Two model menus, not one: `captioner` lists the multimodal pairs, `writer`
-  lists every text GGUF. Point both at the same file and it still costs two
-  loads - the captioner runs through `llama-mtmd-cli` and the writer through
-  `llama-completion`, and no amount of folding removes the second binary. **What
-  this saves is wiring, not time.** Measured on an RTX 3090 with
-  Qwen3.8-27B-abliterated `Q4_K_M` on both menus and three image references:
-  242.8 s cold, ~157 s with the weights cached, against 101 s + 56 s for the same
-  graph as two nodes. The reference block it built is an output
-  too, so what the writer was given stays visible.
-
-  One seed drives both halves, which is the point of merging and also the one
-  thing a graph rebuilt from the two-node version cannot reproduce. And if every
-  asset comes back without a description, the writer is not run at all: a Ref2VA
-  prompt whose whole premise is its references would otherwise be composed from
-  none, after a minute of generation nobody asked for.
-
-  The input groups, the label rules and the encoder checks are
-  `Multi Reference Caption`'s own, imported rather than copied, so the two
-  cannot drift. Both caption nodes stay exactly as they were.
-
-  Like `Multi Reference Caption`, this node needs a recent ComfyUI for
-  `io.Autogrow`. The two are now registered independently, so a version that
-  rejects one still gets the other - previously one `try` covered both and a
-  failure in either lost both.
+- Qwen Rewriter and Qwen Rewriter Options for LightX2V's full Qwen3.5 9B and Qwen3.8 27B FL2VA/Ref2VA checkpoints, through Transformers SFT or an owned GGUF server.
+- Ordered top reference chips, input checkboxes, per-reference instructions, first/last-frame tasks, sampled video, explicit sound descriptions, original reference passthrough, bypass/repeat and prompt-library controls.
+- A separate model-list section with four original SFT checkpoints and their Q5_K_M/Q4_K_M conversions with matching F16 vision projectors, hosted under pytraveler on Hugging Face.
+- Conversion tooling with source/file hashes and model cards, plus workflow 12 for the full Qwen model. Thinking and the final prompt use separate outputs; cancellation and unload release the node's owned runtime.
+- Qwen setup guides in English, Russian and Chinese, updated README introductions and model comparisons, and links to both original SFT and GGUF weights.
 
 ### Fixed
 
-- **A multi-token-prediction build is no longer refused the rewriter LoRA.**
-  `qwen3.8-27b-abliterated-3.69bpw-12GB-MTP` declares `block_count = 65`, and
-  the check compared that with the adapter's 64 and refused it. The extra block
-  is the MTP head, not a layer: `nextn_predict_layers = 1`, and llama.cpp b10310
-  drops it on load with fifteen `model has unused tensor blk.64.*, ignoring`
-  lines before running 64 layers. Its `blk.0-63` carry the same tensors at the
-  same dimensions as Qwen3.6-27B, the adapter's every target exists in them, and
-  a `llama-completion --lora` run against that pair attaches and generates. So
-  `nextn_predict_layers` is subtracted before the comparison, and a real shape
-  mismatch is still refused by name — a Qwen3.5-9B at 32 blocks of 4096 still is.
+- Qwen missing sound descriptions now show an actionable Stopped notification with reference labels, input slots and exact editor controls. Enabled audio/clip-sound chips have a red ! with a tooltip and a shortcut to the instructions editor.
 
-  Attaching is not the same as helping, so that was checked too: the same T2VA
-  prompt through `llama-completion` at `--temp 0`, once with `--lora` and once
-  without, comes back visibly different — 2,907 characters against 2,171, and a
-  different shot breakdown — so the adapter is doing work on this base rather
-  than sitting inert. Both runs produce the three fields correctly.
+## 0.34.0 - 2026-11-08
 
-- **A reasoning model's `<think>` block reached `reference_assets` on the GGUF
-  caption route.** `clip_caption` has cut the thought channel since Gemma-4 E4B
-  turned out to fill it whatever the prompt says; `mtmd_engine` returned the
-  child's output untouched, so a caption from a thinking model arrived as
-  `Picture 1: <think> </think> ...` - or worse, with the whole analysis inside
-  the tags. Reported on Qwen3-VL, where it is not a wiring mistake and cannot be
-  switched off: `llama-mtmd-cli` applies the chat template itself, which is what
-  lets it place the media tokens, and b10310 has no `--chat-template-kwargs`, so
-  there is no `enable_thinking=False` to forward on this route.
+### Added
 
-  Upstream landed the same cut in 0.16.6, so `answer_only` lives in `constants`
-  now and both routes call it there; the local copy in `fields` is gone. What
-  survives here is the warning when the cut leaves nothing behind, and the
-  reference-block handling below. The strip happens after the progress line, so
-  the character count on the node is still the raw one - which is how you see
-  the budget going into reasoning rather than into the answer.
+- GGUF captioner thinking control (`off` by default, `auto`, `on`) in Rewriter Options. Reads supported flags through cached `--help` probes and uses a compatible sibling server for a single reference when the CLI cannot set thinking (#24).
+- API Universal Writer for T2VA, I2VA, FL2VA, L2VA and Ref2VA through configured local or remote Chat Completions servers. Sends the guide or custom system message, raw request and enabled references; original references pass through.
+- JPEG images, sampled video frames with timestamps, WAV audio, decoded RefMods and an explicit descriptions mode. Model capabilities and limits are declared per connection and model.
+- API providers editor with model selection, encrypted key replacement, and Test connection for unsaved settings. Windows uses current-user DPAPI; Linux/server storage uses an operator-supplied AES-GCM master key. Remote editing requires HTTPS and an administrator token.
+- API Writer Options, shared reference controls, bypass/repeat badges, prompt-library support, a portable API workflow, Russian node descriptions/tooltips and a Russian setup guide.
 
-  When a model spends the whole budget inside an unclosed `<think>` and never
-  writes the description, there is nothing left to cut to. `Reference Caption`
-  raises and says so. `Multi Reference Caption` and `Reference Writer` skip that
-  asset and carry on - one asset must not cost the ones already described - and
-  drop its label with it, because an empty `Picture 2:` reads downstream as a
-  real reference. The node's summary counts them.
+### Fixed
+
+- Empty GGUF captions stop the run with a caption-specific error; cancelling server startup releases the child process (#24).
+- Cancelled streaming API requests close their connection, allowing supporting servers/proxies to cancel generation; network errors are never retried automatically.
+- Removed reference previews release media requests and hover timers. Closing instruction and preset windows releases listeners, playback and observers; removing Effect Embeddings aborts client polling.
+- Linked API configuration paths retain their specific rejection message instead of being reported as a generic unavailable location.
+
+## 0.33.0 - 2026-11-04
+
+### Added
+
+- P-H3 Prompt Writer with Text2Image and Image2Image modes, using Pruna's native prompt upsampler through Load CLIP. Requires ComfyUI 0.44.0 or newer.
+- Ordered image references, per-reference roles, keep instructions and matching canvas outputs. Visual RefMods expand to pictures for P-H3 to re-encode; audio RefMods are refused.
+- Image prompt checks, library editing and repeat support, plus two P-H3 generation workflows.
+- Optional use_ref_description in P-H3 Text2Image: the first active reference supplies one selected frame for a standalone prompt. The existing upsampler combines its appearance with the user request; the image generator receives text only.
+- VIDEO and VHS IMAGE references with a visual frame picker: overview, nearby frames, exact frame numbers and workflow-saved selections. The same pictures reach the upsampler and generator.
+
+### Fixed
+
+- P-H3 RefMod thumbnails keep a single-line role above the preview; the lower mod badge identifies the source.
+- P-H3 Text2Image ignores connected references instead of stopping with an error, matching Universal Writer. Its references output stays empty.
+- P-H3 reference chips appear above the mode tabs without changing saved widget positions. Optional STRING/COMBO aspect_ratio overrides the picker and base-image ratio, including custom canvas ratios.
+
+## 0.32.2 - 2026-10-26
+
+### Fixed
+
+- **The Ref2VA writer checks its tags against `reference_assets`.** The node
+  never told the self-check which references were listed, so a `<Video 1>` or
+  an `<Audio 1>` with nothing behind it passed as an ordinary Ref2VA tag. Writer
+  models do add them: MiniMax's full-reference guide shows a sample
+  `retention_analysis` entry for every kind of label, and a model can fill all
+  of them in whatever it was given. Now a line of `reference_assets` that starts
+  with a label lists that asset -- `Picture 1: ...`, `<Picture 1> is ...`, or the
+  same as a list item -- and a tag with no such line is a warning; with
+  `fix_once` on, the writer is asked once more. A block with no labels in it at
+  all is not checked against rather than read as listing nothing. The Universal
+  Writer and both caption nodes read labels by the same rule, so a hand-typed
+  `<Picture 1>:` in `previous` now counts when the next number is picked.
+
+## 0.32.1 - 2026-10-26
+
+### Fixed
+
+- **A writer that answers with nothing stops the node.** When a GGUF writer
+  model ended its answer before writing a word, the empty answer went on as the
+  prompt and the video was made from nothing -- with `self_check` off, not even
+  the log said so. Every writer, rewriter and the reducer that runs a GGUF model,
+  through llama-cpp-python or the official llama.cpp binaries, now stops with an
+  error instead. From the binaries, the error ends with their last output, which
+  says how many tokens the model ran -- the one line the report that led here
+  did not have. With `greedy` on, the same input gets the same empty answer every
+  time, so the error suggests turning it off or trying another writer model.
+  Reference captions are unchanged: an empty one is still a warning.
+
+## 0.32.0 - 2026-10-25
+
+### Added
+
+- **RefMods, read and used.** A RefMod is a reference encoded once and saved in
+  `models/refmods`: the H3 VAE's latent of a picture, a clip, a stack of photos
+  or a voice. The new **MiniMax-H3 RefMod** node picks one -- the files shared
+  on Hugging Face, ComfyUI-MiniMaxH3Mod's single-file bundles and pairs named
+  `<name>_visual` / `<name>_audio` included -- with a `visual` and an `audio`
+  output, a `strength`, and optional `vae` / `audio_vae` to decode it once so a
+  writer can see and hear it. None of the shared files keep pictures of
+  themselves; a stack is decoded one photo at a time.
+- **RefMods in the strip of the Universal Writer and the Prompt Rewriter Omni.**
+  Each output goes into a square of its own, marked `mod`, and is numbered as
+  what its file says it is: a clip or a stack of photos is a `<Video N>`, a
+  voice an `<Audio N>`, and a picture can be a subject but not a clip. The
+  Universal Writer describes it from its pictures, with what the file says --
+  a stack being separate photos of one subject, a saved name, a saved
+  appearance or voice -- added after the role's question, and writes a voice
+  nobody decoded from its saved description. Its writer is told, ahead of each
+  caption, what the file says the RefMod is -- a voice being the voice alone,
+  not what plays behind it -- and which label holds the voice saved with a
+  look and the look saved with a voice: the captioner reads the two apart, and
+  without it a voice saved over music was taken for the music and borrowed
+  for the score. The Omni adapter refuses one it
+  cannot see or hear, and names the input to connect. Both hand the RefMod
+  itself on in `references`.
+- **MiniMax-H3 Reference Encode**, which stands in for Reference Slots and
+  MiniMaxH3ReferenceToVideo together and takes the same settings. Pictures,
+  clips and sounds are prepared with that node's own helpers; a RefMod is given
+  to the generator as the latent it saved, in the place the writer numbered,
+  and H3's text encoder is shown its pictures -- a clip at two frames a second,
+  a stack every fourth photo. The order is MiniMaxH3ReferenceToVideo's, because
+  the DiT matches a reference block to its label by position alone. Its
+  `summary` says what went in and what it costs in tokens.
+- **Template 8 - RefMods to video.** The whole chain on one screen: a RefMod
+  node, the Universal Writer, and template 6's generator box with Reference
+  Encode in it in place of the native reference node, the two VAEs outside it
+  and shared with the RefMod node. The RefMod picker ships empty, like the
+  image loaders, and an empty pick is refused as such rather than as a file
+  gone missing. Template 6's note points here for a RefMod.
+- **Screenshots of a RefMod in both strips** in the README, in all three
+  languages.
+
+### Changed
+
+- **Reference Slots refuses a RefMod** and names Reference Encode: the native
+  node encodes what it is given, and a RefMod is encoded already.
+- **The Prompt Rewriter Omni on a safetensors base names what it cannot take.**
+  That route shows the model pictures only, and its refusal used to read
+  "clip, sound cannot be passed". It now names each slot and what is in it --
+  a RefMod by its entry, and a stack of photos as the clip H3 reads it as --
+  says it on screen too, and offers switching the squares off besides a GGUF
+  base.
+
+## 0.31.0 - 2026-10-24
+
+### Changed
+
+- **`trust_remote_code` is gone, and a model's own code never runs.** The switch
+  on the Options node let Transformers run the Python a checkpoint ships with.
+  It was off by default, but a workflow could turn it on, and ComfyUI's API,
+  which asks for no login, can add any Hugging Face repository to the model
+  list - on a ComfyUI reachable from the network, enough to download a model and
+  run its code. The Comfy Registry flagged every version that had it (issue
+  #21). A checkpoint whose `config.json` names its own code in `auto_map` is now
+  refused with a message, and the tokenizer, the processor and the model are
+  loaded with `trust_remote_code=False` throughout. None of the models the pack
+  lists needs it.
+- **Workflows saved with the switch still load.** ComfyUI restores widget values
+  by position, so the removal would have moved `prompt_file`, `self_check`,
+  `fix_once` and `downloader` one slot along and failed validation, as in issue
+  #11. The Options node drops the old value before the rest are dealt out, for
+  every layout from 0.17.2 to 0.30.0, and takes off the input slot a recent
+  frontend saves alongside it. API-format workflows were never affected:
+  ComfyUI ignores an input a node does not declare.
+- **The registry package leaves out `tests/`, `tools/` and `.github/`.** Nothing
+  in them runs in ComfyUI, and they held 10 of the 22 findings the registry's
+  scanner reported for 0.28.1.
+
+## 0.30.0 - 2026-10-18
+
+### Added
+
+- **A clip's own sound can be a reference of its own.** Click a clip's label
+  band in the strip of the Universal Writer or the Prompt Rewriter Omni, or tick
+  the new speaker box on the Universal Rewriter's `reference_video` row. On
+  Ref2VA the clip's sound then takes an `<Audio N>` of its own, numbered ahead of
+  every standalone sound - the order MiniMaxH3ReferenceToVideo and LightX2V's
+  runner number them in - and the square reads `vid+a1`. The Universal Writer
+  has the sound described as an `Audio N` line just before the clip. The Omni
+  adapter hears it, handed over as a separate sound right before the clip, which
+  is the only way its upstream inference ever passes a clip's sound. A
+  standalone sound ahead of a sounding clip in the strip is presented after it,
+  so the numbers agree. `references` says which clips were counted, and
+  Reference Slots puts exactly those sounds on `video_audio_N`. A captioner that
+  cannot hear is refused before anything loads, and a clip with no sound track
+  is said on the node and left unnumbered.
+- **Notices for references LightX2V's runner refuses.** A Ref2VA set of sounds
+  alone, and a reference picture or clip narrower or wider than 1:4 to 4:1, are
+  both errors there. ComfyUI's MiniMaxH3ReferenceToVideo takes them without
+  checking, so the writers say so in a toast before they start rather than
+  refusing.
+
+### Changed
+
+- **Reference Slots follows the writer.** With `soundtracks` off, a clip's sound
+  goes across exactly when the writer counted it. On, every clip gets its sound
+  as before, and the warning about moved labels counts only the clips the
+  writer left silent.
+- **A reference clip is described over what the generator keeps of it.**
+  MiniMaxH3ReferenceToVideo keeps no more of a reference clip than the length of
+  the video it makes, and LightX2V's runner cuts it there too. On Ref2VA the
+  Omni rewriter and the Universal Writer's captioners now sample a clip's frames
+  from that stretch alone, not across the whole file, and a batch of frames used
+  as a clip is cut to the same count. Standalone sounds are still passed whole,
+  because ComfyUI's generator encodes the whole of one.
+- **The self-check lets a Ref2VA prompt cite up to `<Audio 6>`**, three standalone
+  sounds and three clip sounds. The sockets still take three standalone sounds.
+
+### Fixed
+
+- **The Omni rewriter's snapped duration agrees with LightX2V.** The length is
+  now rounded to a whole frame before it moves up to the 17n+5 grid, which is
+  the order LightX2V's runner works in. Aligning the fraction instead pushed
+  6.6 s to 7.29 s (175 frames where H3 makes 158), 7.3 s to 8.00 s, and 15.1 s
+  to 15.79 s, past the 362 frames H3 makes at most - and the alignment line
+  quoted those lengths. The duration widget's tooltip did the same arithmetic
+  and has the same fix.
+- **Two sounds or two clips on the Omni rewriter no longer show the model the
+  last one twice.** Every reference was written into one folder under one name
+  per kind - each sound as `audio.wav`, each clip's frames as `frame_000.png`
+  onwards - so the second overwrote the first before llama.cpp read them. Each
+  file is now named by its place in the turn.
+- **A trimmed VIDEO is described over its trim.** The captioners and the Omni
+  rewriter read a clip from the start of its file while Reference Slots handed
+  the generator the trimmed stretch, so the description and the clip could be
+  two different parts of one file. Previews and the library's thumbnails start
+  at the trim as well.
+- **The Universal Rewriter's Omni tab tooltip** said clips, sound and Ref2AV
+  were only on the Prompt Rewriter Omni node. The tab has had Ref2VA with its
+  clip and sound rows for a while.
+
+## 0.29.0 - 2026-10-13
+
+### Added
+
+- **Unload model.** A button on every node that has `keep_model_loaded`. It
+  unloads what the pack is keeping in memory, at once and without a run. Until
+  now the only way to let a kept model go was to turn the switch off, and the
+  switch is an input: the node ran again and wrote the same text a second time
+  before it unloaded. Pressed while a node is still writing, the button waits
+  for that run and unloads after it. Suggested in issue #20.
+- **ComfyUI's `Unload Models` unloads this pack's models too.** They are not
+  ComfyUI models, so its model management walked past them. The pack now hooks
+  itself into `comfy.model_management.unload_all_models`, which also covers the
+  `/free` route, ComfyUI's out-of-memory handler and the clean-up nodes of other
+  packs: one of those between the writer and the sampler takes the writer out
+  before the video model loads.
+
+### Changed
+
+- **`repeat_last` reads `keep_model_loaded`.** A node handing back a kept
+  prompt, its own or one from the library, never reached the engine that
+  honours the switch, so the model stayed whatever the switch said. With the
+  switch off, such a run now unloads what the pack holds and says so in the
+  caption under the node. `repeat_last` on and `keep_model_loaded` off gives the
+  card back with nothing written twice.
+- **A kept model no longer outlives a request to unload everything.** This
+  follows from the hook, and it matters in two cases. A sampler that clears the
+  card for itself by calling ComfyUI's unload takes a kept writer with it, where
+  before the two competed for VRAM. And under `--disable-smart-memory` ComfyUI
+  unloads all models after every workflow run, so `keep_model_loaded` holds
+  within a run and not across runs.
+
+## 0.28.1 - 2026-10-12
+
+### Fixed
+
+- **Qwen2.5-Omni runs on Transformers 4.57.** The Omni rewriter on a folder of
+  safetensors stopped at `Unrecognized configuration class Qwen2_5OmniConfig for
+  this kind of AutoModel: AutoModelForImageTextToText`. The checkpoint is a
+  wrapper, and only the thinker inside it writes text; the pack found the
+  thinker's class through the image-text-to-text auto mapping, which lists it
+  from Transformers 5 on and not before. 4.57 ships the class all the same,
+  beside the wrapper, and when no mapping names it the pack now finds it there
+  by the config it is built from. Past that, a reference picture met the next
+  4.57 difference: its Omni processor reads the system turn as a list of parts
+  and failed on a plain string with `string indices must be integers`. The
+  processor now gets every turn as parts, which the chat templates of all three
+  bases render exactly as they rendered the string. The requirement stays at
+  4.57.1. Issue #20.
+
+## 0.28.0 - 2026-10-10
+
+### Added
+
+- **Check it lists what a repository holds.** A GGUF entry with a repository and
+  no file used to be refused for having no file -- and for having no name, if
+  none was typed yet. Now Check it answers the question that was being asked:
+  the GGUF files in that repository, as buttons, smallest first. A click puts the
+  file into the form, and a name in the style of the packaged entries
+  (`Qwen2.5-Omni-7B Q4_K_M`) while none of your own is typed. The lists that run a
+  pair get the projectors in a row of their own, for `mmproj`, filled in by
+  themselves when the repository holds only one; once both halves are there the
+  check runs and adds up the download. A model split into parts
+  (`-00001-of-00003.gguf`) is counted and left out, because an entry names one
+  file and only that file is downloaded. A folder on this machine in `repo` is
+  listed the same way, and a file name the repository does not have brings up
+  the same buttons. A name or a size typed by hand is never replaced; a size that
+  disagrees with the files gets a warning instead.
+
+- **The windows can be resized.** The prompt editor, the prompt library, the
+  Model list and the bundled prompts drag from any edge or corner, fill the
+  browser tab from a button in their top corner, and each kind remembers its own
+  size. The prompt box in the editor grows with the window.
+
+- **The library and the bundled prompts answer the keyboard.** The arrow keys
+  walk the list without leaving the search box, Enter uses the lit record -- or
+  picks the lit preset -- and a double click does the same. Both open scrolled to
+  what the node is pointed at, preset #850 of the thousand included.
+
+- **A line in the footer says what happened.** The library counts its prompts, or
+  how many a search has left, and says what an edit or a delete did. The Model
+  list counts the entries and says what was saved, deleted or put back, and how
+  many nodes in this graph moved to an entry's new label. All of this used to go
+  to the browser console, where nobody saw it.
+
+### Changed
+
+- **Nothing typed is thrown away without a question.** Escape or Cancel in the
+  prompt editor, in "Save the last prompt" and in the Model list's entry form
+  asks before closing on unsaved typing, and closes at once when nothing was
+  typed. Escape is ignored while a save is on its way. "Save the last prompt" no
+  longer closes on a click beside it.
+
+- **Delete in the library asks first.** The record is gone for good -- the
+  library keeps no other copy -- and the question says so, and says when the
+  node's own choice goes with it.
+
+- **Questions and failures come in the pack's own windows** rather than the
+  browser's `alert` and `confirm` boxes. A dangerous question starts on Cancel,
+  so a reflexive Enter does not answer it.
+
+- **A change made from a window counts at once.** ComfyUI looks for changes on
+  mouseup, which comes before the click, so Use in the library, an edited answer
+  switching `repeat_last` on, an `+ instr` question set with its button and the
+  like marked the workflow as modified only at the next click -- and Ctrl+Z took
+  them back together with whatever came next. They now count straight away, one
+  step each. Typing in a LoRA Triggers row counts as one step when the field is
+  left, rather than one per letter.
+
+- The Model list's entry form no longer underlines repository ids as spelling
+  mistakes or offers the browser's typing history.
+
+### Fixed
+
+- **Deleting a model entry no longer clears the nodes that use it.** With nothing
+  on disk to fall back to, the server leaves those nodes holding the old name, so
+  that a run says the entry is gone rather than picking another model for them --
+  and the window then wrote an empty value into them anyway. They keep the name
+  now, and the footer says how many do.
+
+- **A server that cannot be reached no longer leaves a window stuck.** Every
+  request from the windows now comes back with an answer while ComfyUI restarts
+  or is gone, so a Save button no longer stays greyed out for good. "New prompt
+  file" says why a file was not made, "Edit the last prompt" says why the answer
+  could not be read instead of opening an empty editor, a library that could not
+  be read says so instead of "This set is empty", and the bundled prompts try
+  again on the next open instead of remembering the failure.
+
+- **"Opened" on the Open models.json button** appears only when the file did
+  open, and Open guide folder says so too.
+
+## 0.27.1 - 2026-09-29
+
+### Fixed
+
+- **An MTP build of the right base is no longer the wrong size.** A GGUF that
+  carries a speculative-decoding draft head counts it in `block_count`, so a
+  Qwen3.6-27B built with one read as 65 blocks and the rewriter refused it as
+  `(wrong size for the adapter)`. The header records the head separately, in
+  `nextn_predict_layers`; llama.cpp loads it only for `--spec-type draft-mtp`,
+  which the pack never passes, and the adapter has no tensors for it. The shape
+  check now compares the blocks without the head, and Check it mentions the head
+  when there is one. Issue #18.
+
+### Added
+
+- **A warning when the header names another model.** The shape check cannot
+  tell Qwen3.8-27B from Qwen3.6-27B: same architecture, 64 blocks of 5120.
+  llama.cpp attaches the LoRA to it, to weights the LoRA was never trained on,
+  and until now nothing said so. The 27B, 8B and Omni rewriters now read the
+  names a GGUF gives itself (`general.name`, `general.basename` with its size
+  label, every `general.base_model`) and say so on the node and in Check it when
+  none of them is the adapter's base. It warns and does not refuse: those fields
+  are optional and written by whoever quantised the file, so a file that names
+  nothing gets no warning, and a fine-tune that names the base is taken at its
+  word.
+
+## 0.27.0 - 2026-09-26
+
+### Added
+
+- **Check it reads the chat template.** The 27B rewriter and the guided writers
+  build their prompt from the model's own template, so a GGUF without one -- the
+  base conversion of a model rather than the instruct one, typically -- passed
+  every check and then stopped on the first run with "this GGUF has no embedded
+  chat template". On those lists Check it now refuses such a file, and renders
+  the template once on a system and a user turn, so one the pack cannot render
+  is refused too. The captioners and the 8B and Omni rewriters leave the template
+  to `llama-mtmd-cli`, which falls back to ChatML, so there a missing one is a
+  warning.
+
+- **The Prompt Reducer has the Model list button.** It reads the writer list, but
+  was missing from the table of nodes that do: no button, and an entry added in
+  the window never reached its dropdown until the page was reloaded.
+
+- **An `on disk` tag in the Model list window** on every entry whose files are
+  already here, so choosing it downloads nothing.
+
+### Changed
+
+- **One row per model.** An entry that had downloaded its file was offered twice:
+  under its own name, and again as the `on disk:` row the folder scan found for
+  that same file. The scanned row is now left out when an entry already stands
+  for it -- on the machine this was written on, six such pairs across the five
+  lists. A workflow saved with the `on disk:` label keeps running the same file,
+  and is moved to the entry's label when it is opened.
+
+- **A label saved before an edit keeps working.** Changing an entry's download
+  size, VRAM note or note changed its label, and every workflow saved with the
+  old one stopped at ComfyUI's "Value not in list". An entry is now found by its
+  name: the old label passes validation, runs the entry, and is replaced by the
+  new one when the workflow is opened. Renaming the entry itself still loses the
+  choice in other workflows, and the edit form says which of the two a change is.
+
+- **A model that is gone says so in words.** A dropdown value the list no longer
+  has failed with "Value not in list" and forty labels; it now fails with what
+  to do about it -- pick another entry, or add it back with the Model list
+  button. Only what the dropdown can name passes: a path typed into an API
+  prompt is refused as before.
+
+- **Deleting an entry whose file is here moves its nodes to that file.** Its
+  `on disk:` row comes back into the dropdown, and the nodes in the open graph
+  that used the entry move to it. With nothing on disk they keep the value and
+  the run says the entry is gone, rather than picking another model and starting
+  a download.
+
+- **The Universal Rewriter checks only the base the chosen tab runs.** An 8B entry
+  deleted from the list stopped a graph that was running the 27B.
+
+- **Editing the list reaches every node, not just the ones on the canvas.** A node
+  added from the library afterwards, a workflow tab switched to later and a combo
+  promoted out of a subgraph all went on offering the old list until the page
+  was reloaded. The window now has ComfyUI re-read the node definitions after
+  every change, in both renderers; it used to do that under Nodes 2.0 only.
+
+### Fixed
+
+- **A model already downloaded was downloaded again once `extra_model_paths.yaml`
+  named an `LLM` folder of its own.** ComfyUI puts such a folder first, and the
+  nodes looked for an entry's files in the first `LLM` folder only -- so
+  everything fetched into `ComfyUI/models/LLM` before the line was added counted
+  as missing, 19.5 GB for the 27B. Files are now looked for in every `LLM`
+  folder, and only a new download goes to the first one. An interrupted second
+  copy may have left a `.part` file in the new folder; it can be deleted.
+
+- **A model and its projector put flat in an `LLM` folder were downloaded
+  again.** A pair is fetched into a folder named after its repository, and that
+  folder was the only place a pair was looked for -- so a pair sitting flat in
+  `models/LLM`, fetched by an older version or by hand, counted as missing while
+  Check it reported it on disk. 5 GB of Qwen3-VL-8B started downloading beside an
+  exact copy of itself. A flat pair now counts when both files are in the same
+  folder, and Check it asks the same question the node does. A single GGUF put by
+  hand into a folder named after its repository is found too.
+
+- **Downloads work behind an antivirus that inspects HTTPS.** An antivirus that
+  scans encrypted connections re-signs huggingface.co with a root certificate it
+  installs in the Windows store, so the browser opens the site and every
+  download from this pack stopped at "self-signed certificate in certificate
+  chain": `requests` checks certifi's bundle and nothing else. The pack's own
+  requests -- the file listing, the transfer, Check it, the guides, the llama.cpp
+  binaries -- now trust the system store as well as certifi. Verification stays
+  on. A certificate that neither trusts gets a message saying what is likely in
+  the way, and does not spend five retries on it. `huggingface_hub` and `hf_xet`
+  bring their own TLS, so the `huggingface_hub` downloader still fails there; its
+  error now says so and points at the built-in transfer.
+
+- **The Universal Writer's self-check counted sockets, not labels.** A picture
+  whose badge in the strip makes it a clip is `Video N` in the block the writer
+  reads, and one made a subject is `Subject N`; the check still counted it as a
+  picture. So a correct `<Video 2>` was reported as "cited, but only 1 video(s)
+  reached this node", a `<Picture 5>` that was never written was reported as not
+  cited -- and with `fix_once` on, the writer was asked to write the answer again
+  to agree. Labels carried in on `previous` were not counted either. The check
+  now reads the block the writer was given, and the memory and library checks
+  count a badged picture as what the prompt calls it.
+
+- **A download leaves lines in the console.** Only the caption under the node
+  showed one, so a run that sat on a download for a minute and was cancelled left
+  the console blank. It now says what is fetched into which folder, where a
+  transfer stopped and that the next run carries on from there, and how many
+  files arrived.
+
+## 0.26.0 - 2026-09-14
+
+### Added
+
+- **The reference squares show what is plugged into them.** On Universal Writer,
+  Prompt Rewriter Omni and Multi Reference Caption, a picture shows its
+  thumbnail, a clip its first frame with a play mark in the corner, and a sound
+  its waveform with a speaker and the file name. Hovering plays a clip and flips
+  through a batch of frames; the tooltip adds the file, the size, the frame count
+  and the length. A sound, after a short hover, plays its first six seconds and
+  lights its wave up as it goes; a press on the square stops it. The number moves
+  to a corner of the preview.
+
+  A square wired to a loader -- Load Image, Load Video, Load Audio or
+  VideoHelperSuite's loaders, through reroutes too -- shows the file before
+  anything runs. One fed through other nodes shows what reached the node on its
+  last run: small JPEG thumbnails, 24 waveform bars and a six-second MP3 of each
+  sound are sent to the page, not the media, and a reloaded page asks for them
+  again.
+
+### Changed
+
+- **A reference with its own instruction is hard to miss.** The band under it is
+  amber for `+ instr` and orange for `= instr`, and the whole square gets a ring
+  of the same colour. It used to be a slightly lighter band, and a question set
+  on one reference could go unnoticed for hours.
+
+### Fixed
+
+- **Reference Adapter: a clip from a bundle is a clip again.**
+  That pack puts its clips in the bundle as frames. Read by value they were
+  pictures and, with `split_batches` on, one picture a frame: `video_N` stayed
+  empty, the pictures ran over capacity, and the clip's paired soundtrack took
+  the place of the first standalone sound. The frames now go out as a VIDEO at
+  24 fps with the paired soundtrack inside it. A track not paired with a clip is
+  still a sound of its own.
+
+- **Captioning a high-resolution clip no longer overflows the context.** The
+  captioner took a clip's frames at full size, and llama.cpp charges a picture
+  by its resolution: eight frames of a 1080p clip are over twenty thousand
+  tokens, and a context of 8192 refused the request whole. The pictures are now
+  shrunk to share what the context has left once the answer and the text are set
+  aside -- never more than 768 tokens a frame, which is what Qwen's own video
+  processor allows, and never fewer than 128. A single picture is shrunk only
+  when it would not fit otherwise. This is the captioning in Universal Writer,
+  Multi Reference Caption and Reference Caption.
+
+## 0.25.0 - 2026-09-14
+
+### Added
+
+- **`MiniMax-H3 Reference Slots`: a writer's references, handed on in the order
+  its prompt numbers them.** Reorder the sound squares on a Universal Writer and
+  the generated video speaks with the wrong voice. `MiniMaxH3ReferenceToVideo`
+  numbers its references by the socket they arrive on, the writers number theirs
+  by the strip, and with the same assets wired to both by hand the two orders
+  agree only until a square is dragged. Switching a reference off went wrong the
+  same way: gone from the prompt, still in the video.
+
+  The writers now hand on what they numbered, and this node puts each reference
+  on the socket carrying its number -- `picture_2` is `<Picture 2>`. Wire it
+  straight across to `MiniMaxH3ReferenceToVideo` once and do the arranging in the
+  strip from then on. A switched-off reference is not handed on at all, and the
+  generator closes up its numbering around an empty socket the same way the
+  writer closed up its labels.
+
+  Clips are decoded here and not in the writer: at 24 fps, on the canvas the
+  generator would scale them to anyway, and up to 15 seconds. A trimmed VIDEO is
+  read over its trim. A clip's own sound goes to `video_audio_N` only with
+  `soundtracks` on, and that is off by default -- the generator gives the sound
+  an `<Audio N>` of its own ahead of every standalone sound, the writers do not
+  count it, and so switching it on moves every `<Audio N>` in the prompt. The
+  summary says by how much.
+
+  It is a node of its own rather than a mode of the Reference Adapter. The
+  adapter feeds the writers and hands a clip on as a VIDEO; this one feeds the
+  generator, which takes a clip as frames and its sound on a socket of its own.
+
+- **A `references` output on Universal Writer, Prompt Rewriter Omni and
+  Universal Rewriter.** Appended after every existing output, so no link in a
+  saved workflow moves. It carries what the prompt names and nothing else: every
+  switched-on square in strip order, nothing on a text-only task, and on the
+  Universal Rewriter only what the current tab reads.
+
+  It is built from the live inputs on every path -- `bypass`, a library pick and
+  `repeat_last` included -- and is never stored. The library and the node
+  memory keep text only, so records saved before this version load exactly as
+  they did.
+
+  On the Universal Writer a picture badged as a subject goes after the pictures.
+  The prompt calls it `Subject N`, never `<Picture N>`, and the generator has no
+  subject socket, so the only number it can take without landing on a picture
+  the prompt names is one past the last of them.
+
+### Changed
+
+- **Example 6, References to video, goes through Reference Slots.** The two
+  pictures used to be wired to the writer and to the generator separately,
+  which is exactly the arrangement that falls apart when a square is dragged.
+  They now reach the generator from the writer's `references` output, so the
+  order is set in the strip and nowhere else. The note on the canvas says how to
+  wire clips and sounds the same way.
+
+## 0.24.0 - 2026-09-13
+
+### Added
+
+- **`MiniMax-H3 LoRA Triggers`: the words an adapter answers to, kept with the
+  workflow and put back into the prompt.** A LoRA trained with a trigger in the
+  caption prefix does nothing at all until that word is in the text, and no
+  other node in the pack has any reason to keep it: the writers write prose, the
+  reducer shortens it, the self-check judges it, and a word that exists to wake
+  an adapter three nodes later is exactly what all three drop. So it gets typed
+  in by hand after every run and lost on the next one -- the only place in the
+  pipeline where finished text is edited by hand, and the one part of a prompt
+  that cannot be regenerated.
+
+  One row is one adapter: a grip, a tick, a name for your own use, the words
+  that go in verbatim, a mark saying which part of the prompt they go into, and
+  a cross. A row can hold several words separated by commas, which is what an
+  adapter with more than one trigger needs; they are checked and added one at a
+  time, so a row is never half-duplicated. Rows are dragged by the grip into the
+  order you want them, and that order is not decoration -- rows sharing a
+  placement are written into the prompt in list order. Outputs are the prompt,
+  the words this run actually added, and `findings`.
+
+  The list is drawn with the pack's own DOM toolkit rather than on the canvas,
+  so it survives ComfyUI's Nodes 2.0 renderer.
+
+- **Placement is per row, not per node.** Five positions: the description, the
+  soundscape and the music open their own field after its label, and the top and
+  the end of the prompt are positions rather than fields -- which is why those
+  two still work on a text carrying no labels at all. The mark in the row is
+  short on purpose; seeing where every word is bound for without opening
+  anything is half of what the list is for. Where these overlap the effect
+  embeddings node they are worded identically, because they name the same place.
+
+  The field set differs by task -- three for T2VA, six for Ref2VA -- and the
+  node only ever sees a text, so a placement naming a field this prompt has not
+  got falls back to the top and says so on `findings`. Unlike an embedding
+  token, ordinary words do not flatten the line breaks under them, so the top of
+  the prompt is a safe place here.
+
+- **It checks for the word rather than removing it, and that is the difference
+  from the effect embeddings node.** Those ten tokens are known strings and can
+  be cut back out, which is how unticking one removes it. These words are
+  somebody's own: cutting out a trigger spelled `detail` would eat the prose it
+  was sitting in. So a word already in the text is not added a second time --
+  matched on word boundaries, case-insensitively -- and unticking a row stops it
+  being added rather than taking it away, because the word may well have come
+  from the writer. Running the same text through twice changes nothing, which is
+  what the node needs to be safe at the tail of a graph that gets run again and
+  again.
+
+- **A field that says `N/A` is pointed out rather than mended.** Ref2VA prompts
+  are full of `non_diegetic_music: N/A`, and words put at the start of one leave
+  a field that names something and then says there is none of it. The node says
+  so on `findings` and changes nothing else. Replacing the marker would be the
+  louder lie -- the field would then claim there *is* music, called `ohwx face`,
+  and the self-check reads that field -- and dropping the words would be the node
+  overruling a placement that was asked for on purpose. Both are decisions about
+  somebody else's prompt, which is exactly what this node does not make.
+
+- **Nothing is read out of the LoRA files, and that is not a shortfall.** Of
+  forty-four adapters on the machine this was written on, one carried
+  `trigger_word`, one carried an empty `trigger_words`, and none carried
+  `ss_tag_frequency`. The pack can read a safetensors header already
+  (`embeddings.header`), so this is not about cost -- the data is not there, and
+  an adapter often answers to several words where the metadata has room for one.
+  The list is yours.
+
+- **`bypass` on both of the nodes that write into a finished prompt.** The
+  pack's own switch, with the purple badge in the title bar the writers have:
+  the prompt goes through untouched, `tokens` comes back 0, `added` and
+  `findings` empty, and no file header is read.
+
+  ComfyUI's own bypass is not the same thing on a node like this, which is why
+  the switch exists. It stands an input in for each output by matching types,
+  and there are three outputs here and one socket to fill them from. Measured on
+  the triggers node: `prompt` arrives, `findings` is handed the whole prompt as
+  though it were a finding, and `added` loses its link altogether -- leaving
+  whatever it fed with no input at all. On the embeddings node `tokens` is an
+  INT with no INT input to stand in for it, so that link goes the same way.
+  Nothing reports any of it.
+
+  Neither node runs a model, so this is not about VRAM: it is about judging a
+  prompt with the words in and with the words out, without unwiring anything.
+  Switching it on stops words being added; it does not take out words the text
+  arrived with.
+
+- **A seventh example workflow: `7 - LoRA triggers and effects`.** The bundled
+  presets into the check into both of the nodes that write into a finished
+  prompt, ending in four previews: the prompt, the words this run added, and
+  what each of the two noticed. It loads nothing and downloads nothing -- the
+  prompt comes from the thousand that ship with the pack.
+
+  The list is set up with four rows, one per placement, so the marks read as a
+  column, and the wiring makes the ordering rule visible: the check measures the
+  text before either node lengthens it. The fourth row is switched off, which is
+  the shortest way to show what that does and what it deliberately does not. The
+  card the template browser draws beside it comes from `tools/template_cards.py`
+  like the other six.
+
+## 0.23.1 - 2026-09-08
+
+### Added
+
+- **`README_ZH.md`: the whole README in Simplified Chinese.** 
+  This is the full text rather than a summary: the same 43 sections in the same
+  order, the same screenshots, the same tables and the same measurements.
+
+  It says at the top what it is. The author does not read Chinese, the
+  translation was made by an AI, mistakes are worth an issue, and where the two
+  pages disagree the English one is right.
+
+  Node names, widget names, answer fields, paths, environment variables and
+  model names stay in English -- the policy the Languages section already
+  states for the Russian locale. They are identifiers, and a translated
+  identifier matches nothing on the node, in the workflow JSON, in this
+  changelog or in a search box. A node's section heading keeps its English name
+  and adds a Chinese gloss after it, so the name can still be copied into
+  ComfyUI's node search.
+
+  `tools/toc.py` writes its contents list and its anchors like it does for the
+  other two, and the doc tests cover it the same way: 43 sections, 43 internal
+  links, every one of them resolving.
+
+  The node interface itself is not translated. `locales/zh/` is a separate job.
+
+## 0.23.0 - 2026-09-07
+
+### Added
+
+- **`MiniMax-H3 Effect Embeddings`: the ten published effects, put into a
+  prompt.** Somebody asked for support for them (#15). They are not keywords --
+  each file is a single `[N, 5120]` tensor, fifty to a hundred and forty
+  positions of prompt that have already been through the text encoder -- so an
+  effect costs prompt length rather than adjectives and arrives at full strength
+  or not at all.
+
+  The node ticks them off a grid that says what each one costs and which are on
+  disk, fetches the missing ones into ComfyUI's own `models/embeddings` folder,
+  and reports the real position count read out of each file's safetensors
+  header. It is idempotent: unticking an effect takes its token back out.
+
+  It is a node rather than a line you type because every way this fails is
+  silent. ComfyUI drops a token it cannot use with one line in the console and
+  nothing else -- the video generates, without the effect, looking exactly like
+  a prompt that never asked for one. Needs ComfyUI 0.33.0 or newer, which is
+  where `embedding:` started reaching the MiniMax-H3 tokenizer.
+
+- **The self-check reads embedding tokens.** A capital `Embedding:`, a token
+  stuck to the word in front of it, or a full stop on the end of a name is a
+  token that will be dropped in silence; a name that is not one of the ten is a
+  note rather than a warning, because it may well be your own textual inversion.
+  The one rule in that module that is ComfyUI's rather than MiniMax's, and it is
+  there because the failure has the same shape as all the others.
+
+  It is deliberately not in `repair.FIXABLE`. The token was put there by a node,
+  deterministically; a regeneration would not reproduce it, and the repair
+  instruction would quote the finding back into the writer's prompt.
+
+- **`placement` says where the tokens go, and it is not a matter of taste.**
+  ComfyUI's tokenizer joins everything that follows a token onto one line, so a
+  token at the top of a prompt flattens every blank line between the fields
+  below it before H3 sees them. `end of the prompt` is the placement that leaves
+  them alone; the default opens the description field, which is the position an
+  effect was meant to modify. The node says on its `findings` output when line
+  breaks are being flattened.
+
+### Fixed
+
+- **A prompt carrying effect tokens was read as a model stuck in a loop.**
+  `embedding:a embedding:b ...` is a fixed unit repeating at a short period,
+  which is exactly the shape `checks.looping` looks for. Worse than a spurious
+  warning: that function is also a live stop condition for all three engines,
+  and `"loop"` is in `repair.FIXABLE`, so the pack would have burned a second
+  generation mending text a node wrote on purpose. Tokens are taken out before
+  the text is read, and a real loop beside them is still found.
+
+- **The Prompt Reducer capitalised `embedding:` at the start of a sentence.**
+  ComfyUI's test is `word.startswith("embedding:")` and nothing else, so
+  `Embedding:` is not a cosmetic slip -- the token is dropped and the effect
+  never arrives. The tidying that raises the first letter of a sentence now
+  leaves one alone.
+
+## 0.22.0 - 2026-09-07
+
+### Added
+
+- **`downloader` on the Options node: the built-in transfer, or `huggingface_hub`.**
+  Somebody reported a 15 GB file arriving at 4-8 MB/s, an hour where the Hugging
+  Face CLI takes five minutes (#16). The reason is not mysterious: this pack
+  moves bytes over one ranged HTTP connection at a time, and the Comfy-Org
+  repositories are Xet-backed, where `hf_xet` fetches the chunks of a single
+  file over many connections at once.
+
+  The default does not move. `huggingface_hub` and `hf_xet` are not dependencies
+  of this pack and are not going to become them -- install them into ComfyUI's
+  own Python and pick the second value, or change nothing and keep the transfer
+  that needs nothing. If the setting asks for a route this installation cannot
+  take, the built-in one runs and says so on the node rather than failing: the
+  value rides inside the workflow, and a graph authored on a machine that has
+  those packages has to still run on a machine that does not.
+
+  It covers Hugging Face repositories only. The llama.cpp binaries come from
+  GitHub releases and the writing guides are one small request each; neither
+  goes through it. Two things are worth knowing before switching mid-download:
+  the two backends park half-finished files in different places, so switching
+  restarts that one file, and `hf_xet`'s chunk cache sits under
+  `~/.cache/huggingface/xet` -- on `C:`, whatever drive the models are on.
+
+  A file already on disk at its full size is never handed to either backend.
+  That is not an optimisation: a finished multi-gigabyte file sitting in the
+  folder with no hub metadata beside it makes `huggingface_hub` read the whole
+  thing back to hash it, on the calling thread, with nothing reported.
+
+
+## 0.21.0 - 2026-09-05
+
+### Added
+
+- **Two nodes that go the other way: a finished H3 prompt back to the short line
+  it was written from.** `MiniMax-H3 Prompt Reducer` runs a model from the
+  writer list and hands back the line; `MiniMax-H3 Reduce Prompt (any LLM)`
+  builds the same two messages as strings for an LLM node you already have, the
+  way Guide Prompt does for the writers. Four hundred words of blocking, light
+  and sound come back as "A black cat walks along a wooden fence in a yard at
+  dusk."
+
+  It is for changing one word of a prompt you liked without rewriting the other
+  four hundred -- reduce, edit the line, feed it back to a writer -- for handing
+  a prompt written for H3 to a generator that wants a short one, and for putting
+  a readable line on a prompt in the library.
+
+  **Half of it is not a job for a model, which is what makes a 4B enough.** An
+  H3 prompt is not prose, it is a known shape: named fields, the alignment
+  sentence at the top, `[Shot 2] At 0:03` markers through the body, `<Picture 1>`
+  tags wherever a reference is cited, dialogue fenced in `<d>`. All of that is
+  recognisable by rule and all of it comes off before the model is asked
+  anything, so what it gets is one paragraph of ordinary description under a
+  short instruction. Asked instead to reverse the whole document, a small model
+  loses the format and the idea together.
+
+  Reference bindings come off with the rest, deliberately: for Ref2VA,
+  `subject_definitions` and `retention_analysis` describe the assets, and a short
+  prompt that kept them would describe pictures the next run will not have. Both
+  nodes also expose the cleaned text on its own output, `scene`, which no model
+  has touched.
+
+  Any of the five tasks is accepted without being told which -- the text is
+  split against every field name either family uses, and one with no field names
+  at all is read whole as the description.
+
+- **Four axes on both nodes, rather than one abstraction dial.** `detail` is how
+  much comes back (`idea`, `sentence`, `paragraph`); `subjects` is how
+  specifically people are named (`as written`, `age and gender`, `impersonal`);
+  `keep_camera`, `keep_style` and `keep_audio` each hold or drop one thing.
+  They are separate because they are independent: a one-line prompt can still
+  say "a woman in a red coat", and a three-sentence one can still say "a
+  subject". Measured on a 4B against a documentary prompt about a fisherman,
+  `impersonal` gives "A subject hauls a net over the side of a boat under a
+  pre-dawn sky" and `keep_audio` appends "Waves slap the hull, rope creaks,
+  gulls cry overhead" -- one axis at a time, as asked.
+
+  The worked example in the instruction is assembled from those same axes, and
+  that is load-bearing rather than tidy. Where the rules and the demonstration
+  disagree, a small model follows the demonstration: with a fixed example whose
+  answer had no camera in it, `keep_camera` silently did nothing no matter what
+  the rule above it said. Every combination now shows an answer that obeys it.
+
+- **A `language` widget on both nodes, and on the Reducer it is a second pass.**
+  Empty means the language of the input; anything else is a language name.
+
+  Asking for the reduction and the language in one request does not work, and
+  the reason is the worked example again: it is written in English, it cannot be
+  anything else, and a model copying the demonstration copies its language too.
+  The failure is not uniform, which is what took measuring to see. With the
+  three keeps off the example is short and the rule was obeyed; with them on,
+  which lengthens the example, three models in a row answered in English however
+  the rule was phrased and wherever it was put, including as the last line of
+  the system prompt after the example.
+
+  So the Reducer shortens first and translates the finished line afterwards, in
+  its own request. That one has a single objective, no example to copy and
+  nothing to trade off, and the same models obey it: every combination tried
+  came back in the language asked for, on a 4B, a 9B and a 35B, in Russian and
+  in Chinese. It costs one short generation on a model already loaded, and the
+  node holds the model between the two passes whatever `keep_model_loaded` says
+  about afterwards. The translate pass is sent the sentence with no label over
+  it, because a label is text and a model told to translate the text translates
+  the label with it.
+
+  Two consequences. `system_prompt` does not switch the language off: `detail`,
+  `subjects` and the keeps stop applying when the instruction is replaced,
+  because they only exist to build it, but the language is not in that text at
+  all. And `Reduce Prompt (any LLM)` cannot do this, since it builds one request
+  and runs nothing -- there the language stays a rule inside the instruction,
+  obeyed or not depending on the model, and the Reducer is the reliable path.
+
+  It ships here and not on the writers because there is no format contract on
+  this output: a wrong-language short prompt is visible immediately and breaks
+  nothing downstream, where a wrong-language H3 answer would.
+
+### Changed
+
+- **The guided writers' engine handling moved into `run_messages`.** Picking the
+  file out of the writer list, fetching it, refusing a LoRA that cannot run on
+  its own, widening `n_ctx` to fit what is actually being sent and choosing
+  between the wheel and the official binaries were all inside `_guided_text`,
+  where only a guided rewrite could reach them. They are the same steps whatever
+  the messages say, so the reducer runs through the same code rather than a
+  second copy of it. No behaviour changes for the writers.
+
+- **`ALL_FIELDS` moved from `universal` to `fields`.** Both field families in one
+  tuple is a fact about the format, not about the Universal Writer, and the
+  reducer needs it without pulling ComfyUI in behind it.
+
+## 0.20.0 - 2026-09-05
+
+### Changed
+
+- **`duration` is the same widget on all nine nodes now, and it takes both
+  number types.** It had four shapes for one number: two nodes had a `FLOAT`
+  slider in tenths of a second, five had an `INT` box that stopped at 15, the
+  Omni writer had a `FLOAT` box in half-seconds with that same ceiling, and
+  Prompt Check had a `FLOAT` box already reaching 600, because prompts collected
+  from elsewhere are often longer than this pack's own writers were asked for.
+  The socket is `FLOAT,INT`
+  everywhere, so an `INT` primitive, a node that counts frames and a `FLOAT` off
+  a maths node all wire straight in with no converter between, and the widget is
+  a float in tenths on every one of them.
+
+  Tenths were already the truth of it. Every guide in the pack writes cut times
+  to a thousandth -- `At 00:02.378, the camera cuts to` -- and every template
+  already formatted the number as `{float(duration):g}s`, so a length of 7.5
+  seconds went through intact and only the widget refused to say it. Two places
+  were truncating with `int()` on the way in; they no longer do. The duration is
+  a hint the model reads as one line of text, not a setting: how long the clip
+  really turns out to be is settled downstream by whatever samples it.
+
+- **The 15-second ceiling is gone, and where the widget stops is now yours to
+  set.** People are stretching MiniMax-H3 to twenty and thirty seconds and
+  further with pipelines nobody here wrote, and a widget that refuses to say 20
+  is a widget arguing with what is actually on screen. The server accepts up to
+  600 seconds on every node; the widget offers 30 until you move it.
+
+### Added
+
+- **A `duration` menu on every node that has the widget.** Right-click the node
+  -- on the classic canvas, right-click the widget itself and the entry comes
+  first -- for a submenu with two items: **Default value**, which puts the
+  widget back to ten seconds, and **Longest offered...**, which asks for a number
+  and makes it the widget's top end. What you type is rounded to a tenth of a
+  second, clamped to what the server will take, and kept in the node's own
+  `max_duration` property, so it is saved with the workflow and comes back with
+  it.
+
+  A widget's range is fixed when the node is declared and no single range suits
+  every graph -- MiniMax's own guide is written around clips of a few seconds,
+  those stretched pipelines run well past that -- so the server takes anything
+  sane while the widget spans what you actually work with. A slider reaching ten
+  minutes is a slider that cannot be nudged to 9.
+
+  The Universal Writer has had this as a `max_duration` property since 0.14.0,
+  reachable only through the Properties Panel. That property is still the same
+  one and the panel still reaches it; the menu is the way to it that does not
+  require knowing it exists, and the other eight nodes have both now.
+
+- **The model list is a window now, not a file you open in Notepad.** The
+  **Model list** button on every model-loading node opens a panel over the
+  graph: the models that node offers, with **Add a model**, **Edit** and
+  **Delete** beside them. It shows only the lists that node actually reads --
+  the Universal Rewriter opens on three tabs, the captioner on one -- because
+  the adapters take different architectures and an entry from one list will not
+  load in another's node. Under the tabs is what the list requires: the
+  architecture, the block count and width, whether a projector is needed and
+  which encoders it has to carry.
+
+  Everything still lives in the same `models.json`, and **Open models.json** in
+  the footer still opens it, for the two things the window deliberately leaves
+  alone: the `adapters` sections and a path to a network share. The models the
+  pack found by itself -- in your ComfyUI model folders or in an Ollama store --
+  are listed too, greyed out and not editable: they are offered in the dropdown,
+  so their absence from the editor read as something the window had lost.
+
+  While the file cannot be written -- it does not parse, or it could not be
+  created in the user directory -- every button that would write is dead and the
+  reason is printed in the footer.
+
+  Adding or deleting a model updates the dropdowns in the open graph straight
+  away, on every node fed from that list and inside subgraphs, without a browser
+  refresh. The lists come back from the server built by the very functions
+  `INPUT_TYPES` calls, so they are the same labels in the same order that the
+  next `/object_info` would return.
+
+- **A check that reads the model before you spend a download on it.** **Check
+  it** in the add and edit form answers as much as can be answered without
+  moving any weights. A file already on this machine is read outright:
+
+  ```text
+  - 'Qwen2.5-Omni-7B-Q4_K_M.gguf' is a 'qwen2vl' model, 28 blocks of width 3584. That fits.
+  - 'mmproj-Qwen2.5-Omni-7B-Q8_0.gguf' carries the vision and audio encoder.
+  ```
+
+  Offer that same file to the 27B list and it says so before anything is saved.
+  A transformers repository on Hugging Face is judged from its 4 KB
+  `config.json`, and a GGUF repository is asked whether the files you named are
+  in it -- which is what catches a typo in `file` or `mmproj`, until now a
+  download that failed minutes in, and it fills in `download_gb` while it is
+  there.
+
+- **Restore the packaged entries.** `seed_offered` is what makes a deletion
+  stick across updates, and dropping a list from it is what brings the pack's
+  own entries back. The file's comment block has always said so; it is a button
+  now. Entries you wrote yourself are untouched by it.
+
+- **Models you already pulled for Ollama are offered as writers and
+  captioners** (issue #12). They appear in the `writer_model` and
+  `caption_model` dropdowns prefixed `ollama:`, named the way `ollama list`
+  names them -- `ollama: qwen3:8b [qwen3, 4.7 GB]` -- and nothing is copied,
+  converted or downloaded to get there.
+
+  Ollama stores what it pulls as a plain GGUF, so llama.cpp reads it where it
+  lies. This is the file rather than Ollama's API: the service can be stopped,
+  disabled or removed and the models stay usable. A multimodal model reaches
+  both lists, as a writer without its projector and as a captioner with it, and
+  the pair comes out of the model's own manifest, where the two files are named
+  together -- certain in a way that comparing file names in a folder is not.
+
+  Three stores are found automatically: `OLLAMA_MODELS` if you set it,
+  `~/.ollama/models`, and `/usr/share/ollama/.ollama/models` for a service
+  install. One somewhere else -- inside WSL, in a container, on a drive the
+  server knows nothing about -- is named by hand in `ollama_stores` in
+  `models.json` or in `MINIMAX_H3_OLLAMA_MODELS`. Deliberately not automatic:
+  reaching a path like `\\wsl$\...` starts a stopped WSL distribution, and
+  these lists are rebuilt every time a dropdown is filled. Opening a ComfyUI tab
+  should not boot a virtual machine.
+
+### Fixed
+
+- **An Omni entry without an `mmproj` failed after the download instead of
+  before it.** `models_8b` skips a GGUF entry with no projector and says so in
+  the log; `models_omni` offered it, and the run died on `'x.gguf' and '' were
+  not both present after downloading` with the gigabytes already spent. It now
+  skips the same way. The model-list window refuses to write one in the first
+  place.
+
+- **Deleting a model could bring it back on the next start.** The merge only
+  records what the pack has offered you while it is running over a file it could
+  parse, and the packaged `models.json` carries no such record at all -- so a
+  deletion made before that had ever happened was undone by the next read.
+  Deletions through the window record the name themselves. Only names the pack
+  actually ships are recorded, since `seed_offered` is yours to edit and
+  inventing names in it would silently refuse a future entry of the pack's own.
+
+- **Two edits inside one second could show the older one.** The parsed list is
+  cached under `(path, size, whole seconds)`, and changing a VRAM note from
+  "8 GB" to "9 GB" moves neither the size nor the second. Hand-editing never hit
+  it; a window does. The cache is now cleared by the write itself.
+
+## 0.19.1 - 2026-09-04
+
+### Fixed
+
+- **The rewriter could answer with four broken tokens instead of a prompt, and
+  the quantization was not why.** Asked to rewrite "The cat" on the Omni LoRA at
+  int8, it returned nine characters -- the word "int", a line break, the word
+  "Human" -- and stopped. The same node, the same seed, the same weights now
+  return 1,871 characters with all three fields in place.
+
+  What did it was a torch setting that belongs to the process rather than to
+  this pack. Importing `comfy.model_management` turns
+  `allow_fp16_bf16_reduction_math_sdp` on for everything running in ComfyUI, and
+  unconditionally -- it is not one of the `--fast` options and there is no way
+  to opt a model out of it from a workflow. It is a fair trade for a diffusion
+  model, which does not notice the shorter accumulator. A 7B language model
+  writing a page of structured text notices: where the flash and
+  memory-efficient attention kernels decline the shape and torch falls back to
+  the math one, the reduction lands in bf16, the first decoding step is decided
+  wrong, and greedy decoding has no way back from a first token chosen wrong.
+
+  It was never the quantization. nf4, int8 and bfloat16 all break with the
+  switch on, and all three write the same answer with it off; nf4 was the milder
+  half of the same fault, which is where the run-together words and the
+  unclosed brackets came from. It also explains why accounts of it disagreed:
+  whether a machine sees it at all depends on which attention kernel its GPU is
+  given for the shape, and a card that gets flash or cuDNN never does.
+
+  Generation now holds the reduction off and puts the switch back exactly as it
+  was found, so ComfyUI's own models keep the setting it wants for them. This
+  covers all three Transformers adapters, 27B, 8B and Omni. The GGUF engines
+  were never affected -- llama.cpp uses its own kernels and reads none of this.
+
+### Added
+
+- **A generation that starts repeating is stopped, and the self-check says so.**
+  Nothing here could see a cycle before. An answer that began writing "0000000"
+  or "shot 1 shot 1 shot 1" ran on to `max_new_tokens`, and was then handed
+  downstream as a finished prompt; the only sign of it was the self-check
+  naming the fields the answer never reached, alongside advice about the
+  temperature that greedy decoding does not read.
+
+  On the Transformers engine the watch is on the tokens rather than on the
+  text: six exact repeats of a block of up to 32 tokens, read every sixteenth
+  step and never before 96 tokens are written, with the window taken from the
+  answer alone so nothing the guide repeats can start the count. It has to be
+  the ids, because the streamer hands over only what is up to the last space --
+  a run with no space in it arrives as nothing at all, which is exactly the
+  worst case.
+
+  The llama.cpp engines get the same watch in text, which is sound there
+  because llama-cpp-python hands over each token's text as it comes. `runner.run`
+  and the server's `ask` now honour what their text callback returns, so a
+  caption that starts repeating is cut short as well. Stopping is not a failure:
+  the text written up to that point is kept and returned like any other.
+
+  The self-check then names it -- `the answer gets stuck repeating "shot 1" for
+  1,500 characters and gets no further` -- as a fact and not as advice, because
+  the same rule reads prompts typed into the library, where no model ran and
+  there is no knob to turn. Two shapes are covered rather than a general theory
+  of the thing: a fixed unit of up to 120 characters cycling at the end, and a
+  single character running 80 times or more. A sentence that comes back every
+  137 characters is past that, and a drift like "shot 1 shot 2 shot 3" has no
+  exact period.
+
+  `fix_once` no longer gives up on it. Two missing fields out of three used to
+  read as an answer too far from the format to be worth rescuing; on a cycle it
+  is the opposite -- the model held the format perfectly until the moment it
+  started repeating -- so one more attempt is worth spending. What goes back
+  into the prompt is a rule and never the finding itself, since quoting
+  "000000" back at the model is handing it the cycle to carry on.
+
+## 0.19.0 - 2026-09-04
+
+### Added
+
+- **A thousand finished MiniMax-H3 prompts now come with the pack.** "MiniMax-H3
+  Prompt Presets" hands one of them on. The browser behind its button filters by
+  shooting style, subject, shape, shot count and speech, or searches the words,
+  and shows the frame of the clip each prompt was written for; click a frame and
+  the clip plays.
+
+  They are finished T2VA prompts in the format this pack's own writers produce --
+  the same three labelled fields -- so `prompt` can go to the generator as it
+  stands, or into a writer's prompt input to be rewritten from. That choice is a
+  wire rather than a widget, which is the reason this is a node of its own rather
+  than another button inside the library window. The other outputs are the three
+  fields separately, the size and length of the clip, and where the prompt came
+  from.
+
+  Nothing is downloaded, at install or during a run. The prompts, their tags and
+  one 256-pixel frame each are 6 MB inside the pack, read off disk and unpacked
+  the first time something asks for them; a run takes single-digit milliseconds.
+  The one thing that reaches the network is the clip in the preview, and only
+  when somebody clicks a frame: huggingface.co first, and hf-mirror.com when that
+  does not answer, which is the address that answers from mainland China.
+
+  The prompts and the clips they describe are ostris's work, carried here with
+  credit and not relicensed --
+  [ostris/minimax_h3_1k](https://huggingface.co/datasets/ostris/minimax_h3_1k).
+  The shooting-style and subject tags are the
+  [H3 Atlas](https://cohub.live/baize/video-altas/w/h3-atlas)'s reading of that
+  collection; the frames were cut from those clips here. Every one of the
+  thousand passes this pack's own self-check with nothing to report.
+
+- **Any of them can be copied into your own prompt library.** "Save to the
+  library" opens the editor the library already uses -- name, description,
+  groups, the prompt itself, and the self-check running as you type -- and puts
+  the copy in whichever of your prompt sets you choose.
+
+  The copy says where it came from in its description, so a prompt that travels
+  on from there still names whose it was, and it is an ordinary record from that
+  point: editable, filed under your own groups, and available to every writer
+  through the library window. The bundled preset is untouched, and the node goes
+  on handing on the original.
+
+### Changed
+
+- **The one example workflow is now six.** What shipped before was ComfyUI's
+  Ref2VA and FL2VA gallery templates stacked into a single graph: 59 nodes, 89
+  links, saved at 19% zoom, seven nodes bypassed on open -- the prompt box of the
+  lower half among them -- and one press of Run queuing both halves at once, two
+  diffusion checkpoints and the 32B text encoder, before there was anything on
+  screen to read. Three of the pack's fourteen nodes appeared in it, and the node
+  it is named after was not one of them.
+
+  In its place are six cards in the same browser, numbered in the order they are
+  worth meeting. Four of them write prompts and never load a MiniMax-H3
+  checkpoint at all: the small writer, the 27B LoRA, the reference writer and the
+  bundled presets. Two generate, and those are ComfyUI's own current gallery
+  templates -- the generator folded into one subgraph box, the way ComfyUI now
+  ships them -- with a writer and the prompt check wired in ahead of it. Ten and
+  thirteen nodes, not fifty-nine.
+
+  Each of the six opens at a scale it can be read at, has nothing bypassed, ends
+  every chain in something that shows the result, and carries a "Read me first"
+  note saying what it does, what it downloads, what to set before Run and which
+  template to open next. The image loaders ship empty rather than naming files
+  nobody else has.
+
+- **`tools/template_cards.py` draws the pictures the template browser shows.**
+  ComfyUI builds a custom pack's card from the file name alone and looks the
+  picture up at `<name>.jpg` beside the workflow, so every template needs one of
+  its own. A screenshot cannot serve: prompt boxes, notes and previews are HTML
+  drawn over the canvas and photograph blank. What the cards draw instead is the
+  chain of nodes, with blue for a template that only writes text and amber for
+  one that needs the video weights.
+
+## 0.18.6 - 2026-09-01
+
+### Added
+
+- **A run with several references loads the captioner once, not once each.**
+  `llama-mtmd-cli` starts a process per description, which is right for one
+  picture and wasteful for six: the loop reloaded the model and the projector
+  from scratch every time. It now holds one `llama-server` open for the whole
+  loop and asks it per asset. Same model, same projector, same sampling, same
+  seed and the same system turn, with the loading done once. Three references on
+  an 8B captioner with a warm file cache went from 8.7 s to 3.6 s, and the
+  saving grows with the strip.
+
+  Each path is exactly repeatable: the same graph at the same seed gives the
+  same caption every time, on either. Between the two, a caption can still come
+  out a word apart -- "a blue circle centered on" against "a blue circle is
+  centered on" -- where two tokens are near-tied and the runtimes' batching
+  decides it differently. That is float arithmetic, not a different question.
+
+  It is an optimisation and never a requirement. A build with no `llama-server`
+  beside the captioner, a port that will not bind, a server that never reports
+  healthy: each of those is written to the log and the run carries on one
+  process at a time. A single reference does not start one at all, since there
+  is no second load to save. `MINIMAX_H3_MTMD_SERVER` takes `auto`, `never` or
+  `always` for a machine where this misbehaves.
+
+  Nothing is downloaded for it. `llama-server` ships in the same release
+  archive as `llama-mtmd-cli`, so it is looked for beside the captioner already
+  resolved -- and only there, since a server from a different build could pair
+  the model with an older mtmd that cannot read the projector this one just
+  accepted.
+
+- **A new node takes references that arrive together and hands them back one to
+  a socket.** "MiniMax-H3 Reference Adapter" reads an image batch, a list from
+  another node, or a reference bundle from another pack, works out what each
+  item is from the value itself, and puts it on a picture, clip or sound output
+  -- which is the shape the writers take, so the reference strip below them
+  keeps working exactly as it does.
+
+  That was previously not possible at all: a node handing over its references
+  collected has nothing a per-slot input can accept, and receiving a real
+  ComfyUI list means declaring `is_input_list`, a flag that rewrites the shape
+  of every input on the node it is set on. So it lives on a node of its own,
+  which is the whole reason this is a separate node rather than an input.
+
+  Nine pictures, three clips and three sounds are what Ref2VA can hold, so that
+  is the room there is; anything past it is reported on the summary output
+  rather than dropped in silence. Outputs left over hand on nothing, and a
+  writer already skips those, so wiring a socket that turns out empty costs
+  nothing. An image batch is split into one reference per frame by default,
+  which `split_batches` turns off when the frames are one shot seen several
+  times.
+
+### Changed
+
+- **A description now states its system turn instead of leaving it out**, which
+  changes the captions an upgrade produces. Left out, it is not one thing: asked
+  with no system turn, `llama-mtmd-cli` and `llama-server` build different
+  conversations and answer differently. On Qwen2.5-Omni-3B at the same seed and
+  sampling, one described a sine sweep as "a variety of synthesized sounds,
+  including a sine wave, square wave, and a sweeping tone" and the other as "a
+  descending sweep" -- the second being the true one. No value of the system
+  prompt reproduces either program's own default in the other; what agrees is a
+  turn given to both, so both are given one.
+
+  It also takes the answer out of the hands of two programs' defaults, which are
+  free to move in a llama.cpp release without either calling it a change. The
+  8B and Omni rewriters pass a system prompt of their own and are untouched, as
+  is captioning through a model ComfyUI has already loaded.
+
+- **No llama.cpp child outlives ComfyUI any more, however ComfyUI ends.** The
+  `atexit` hook only runs on a tidy exit, so a crash, a kill from a task
+  manager or a stop from the console left a child holding whole gigabytes of
+  VRAM. Every child is now also in a job object that dies with this process, on
+  Windows, and gets `PR_SET_PDEATHSIG` on Linux. Verified by killing the parent
+  the way a crash does: the child is gone within a second, and survives past
+  fifteen without it.
+
+## 0.18.5 - 2026-09-01
+
+### Added
+
+- **A new node reads a prompt that was written somewhere else.** "MiniMax-H3
+  Prompt Check" takes the text on a socket and applies exactly the rules the
+  writers apply to their own answers -- shot numbering, cut times against the
+  duration, dialogue markup, reference tags against what the task can take and
+  what is actually connected -- then splits the text into the same fields.
+  Anything that produces MiniMax-H3 prose can feed it: another pack's node, a
+  text file loaded into the graph, a prompt found online, or something typed in.
+
+  No model is loaded and nothing is generated; the run costs a few
+  milliseconds. What goes in comes out of the first output untouched, so the
+  node can sit in the middle of a graph. The last output carries the findings,
+  and always carries all of them: `self_check` governs what is announced on
+  screen, which is a question about noise, and wiring the output is asking.
+  "Save the last prompt" is on it too, so a prompt that arrived from elsewhere
+  and read clean goes into the library like one this pack wrote.
+
+- **The answer a node is holding can be edited.** "Edit the last prompt", beside
+  "Save the last prompt" on every writer, opens it in the editor the library
+  already uses: the prompt in a box you can write in, read as you type by the
+  rules the run was read by. The two share one row, because they act on the same
+  thing and a column of five full-width buttons said nothing about which of them
+  belonged together.
+
+  Saving splits the fields out of the new text again, so the section outputs
+  stay in step with the prose; whatever the node kept past its fields -- a
+  reference block, a list of captions -- belongs to the run rather than to the
+  prose and stays as it was. Nothing reaches disk: this is the session store,
+  and an edit worth keeping is saved to the library afterwards. The captioners
+  keep a record too, and theirs is refused rather than mangled -- a line about
+  one asset is not a prompt with fields.
+
+### Changed
+
+- **The READMEs have a contents list.** Two thousand lines with no map is a
+  page you scroll rather than read. It covers every section and subsection,
+  under the anchors GitHub actually gives them.
+
+- **Ref2VA refuses an over-full strip before anything loads.** A task that
+  cannot use what is connected was already refused before any weights moved;
+  the reference task was not, because it has no fixed picture count -- only a
+  ceiling, nine pictures, three clips and three sounds. Going over it used to be
+  described first and flagged afterwards, which spent a full captioning pass and
+  a rewrite on something countable in advance. Subjects are counted apart from
+  pictures, so a badge is often the whole fix.
+
+- **The writers' cache key now covers the answer they are holding**, not only
+  the library record they are pointed at. Editing either changes none of a
+  node's inputs, so without this ComfyUI would go on serving the answer from
+  before the edit. Off `repeat_last` the value is constant and caching is
+  exactly as it was.
+
+- **`tools/locales.py` says when it cannot read a node's registered name**
+  instead of skipping it. A name built from a constant is invisible to the AST
+  read, and a node missed that way is never offered for translation, silently --
+  which is how the check node was nearly shipped untranslated.
+
+### Fixed
+
+- **"Save the last prompt" opened a window with nothing in it to do.** With no
+  answer kept, every control in that box was dead and a line at the bottom
+  explained why -- while "Edit the last prompt", asking the very same question,
+  refused before opening anything. Both refuse up front now, out of one place,
+  and each says the thing that is easy to get wrong: a prompt handed on from the
+  library was never this node's own answer, so it is not kept here -- it is
+  already in the library under its own name.
+
+- **A node that refuses a run now says so on screen.** Every refusal -- a task
+  the connected references cannot serve, a strip holding more than H3 can take
+  -- was only ever an exception: it stopped the run and landed in the console
+  with a traceback, which is not where anyone looks first. The same sentence is
+  now a toast before the exception goes up, under **Stopped**.
+
+- **Toasts stay long enough to be read.** Eight seconds was fine for one short
+  line and nowhere near enough for four findings. The life is now taken from
+  how much there is to read -- roughly 45 ms a character, floored at ten
+  seconds and capped at thirty.
+
+- **The prompt editor says whether an edit will reach the output.** Editing what
+  a node is holding does nothing on its own: a saved prompt wins over the node's
+  own answer, and with `repeat_last` off the next run writes a new one over the
+  edit -- on a greedy seed, byte for byte the same text, so the edit looks
+  silently ignored. The editor now says which of the two is in the way before you
+  type, saving switches `repeat_last` on when nothing else stands in the way, and
+  the toast afterwards says what will actually happen.
+
+- **A message written on a button's own face did not appear until something
+  else repainted that node.** "Saved to global" and the like were set on the
+  widget and then left there: the graph was asked to repaint, the node was not,
+  so the confirmation surfaced later, attached to an unrelated click.
+
+  Every button in the pack now lives in a shared row widget rather than in a
+  canvas widget of its own -- which is what lets two sit side by side, gives
+  them all the same look whether a row holds one or two, and makes a passing
+  message appear the moment it is written, since the text lives in the document
+  and nothing has to be told to repaint. "Open model list" and "Open guide
+  folder" share a row for the same reason Save and Edit do, and the rows sit
+  closer together than the pack's other controls: they are one block of things
+  you can do to the node, not four unrelated ones. The look is defined once, in
+  `mmx_controls.js`, with the rest of the pack's controls.
+
+- Refusals from "Edit the last prompt" are toasts rather than a two-second
+  label, since a button's face is the wrong size for a reason and the wrong
+  place to look when you expected a window. The one for an empty memory also
+  says the thing that is easy to get wrong: a prompt handed on from the library
+  was never this node's own answer, and is edited in the library window.
+
+## 0.18.4 - 2026-09-01
+
+### Added
+
+- **A saved prompt can now be edited where it is kept.** Every card in the
+  library window has an **Edit** button beside Use, Copy and Delete: it opens
+  the record's name, description and groups, and the prompt itself in a box you
+  can write in. What produced the record -- the writer, the settings, the
+  duration, the reference thumbnails -- is shown but not editable, and does not
+  change: that half is the account of a run, and a card that misreported its own
+  provenance would be worse than no card.
+
+- **The self-check reads what you type, as you type it.** The editor runs the
+  same rules the writers run over a model's answer, out of the same module, and
+  against the record's own task, duration and references -- so a cut time that
+  has drifted past the end of the video is named while you are still looking at
+  it. It is the reason to edit here rather than in the JSON file, which will
+  take anything. `self_check` on the Options node governs what the nodes say
+  during a run; the editor always shows everything it found, since you asked
+  for it by opening the box.
+
+  Changing the text drops the writer's own split of that answer into fields,
+  because the split was made from the text as it was. Without it the node
+  reading the record splits the text itself -- exactly what it already does with
+  a prompt written by a different kind of node -- so the section outputs stay in
+  step with what you wrote. A change that changes nothing is not written at all,
+  and a real one stamps the record with the time of the edit, which the card
+  shows beside the time it was saved.
+
+  `library.edit` and `library.inspect` back it, over the routes
+  `library/update` and `library/check`, with the test suite under `tests/`
+  covering both: `cd tests && ../.venv/Scripts/python.exe -m pytest`.
+
+### Fixed
+
+- **A node pointed at a saved prompt now notices when that prompt changes.**
+  ComfyUI decides whether to run a node at all from its inputs, and editing a
+  record changes none of them -- the pick is still the same id in the same
+  file -- so the answer came straight back out of the execution cache, still
+  saying what it said before the edit, with nothing on screen to explain it.
+  The writers now report the picked record's own content from `IS_CHANGED`
+  (`fingerprint_inputs` on the v3 nodes), so an edit makes the node run and
+  hand on what it now says. Nothing else about caching moves: with no saved
+  prompt in play the value is constant, and renaming a record or rewording its
+  description does not make every node holding it run again. A pick whose
+  record has been deleted from elsewhere now runs and raises, rather than
+  quietly serving the answer from a record that is gone.
+
+- **The "New prompt file" box left a promise unsettled when it was dismissed**
+  rather than answered -- closed with Escape or by a click beside it. Nothing
+  visible came of it, but the caller waited forever. Dismissing any of these
+  windows now answers the caller the same way Cancel does.
+
+- **Escape reached every open window at once.** With one window on screen that
+  never showed; the editor opens over the library, and would have closed both.
+  The panels now track their own order, and Escape closes the top one only. A
+  click beside the editor does not close it at all, since a prompt is worth
+  hundreds of words of typing and a backdrop is easy to hit.
+
+## 0.18.3 - 2026-08-30
+
+### Added
+
+- **`self_check` on the Options node decides how much the check says out
+  loud**: `warnings and notes` (the default), `warnings only` -- which drops
+  the guide's softer suggestions, such as the 350-500 words -- or `off`. The
+  reading always happens, since it costs nothing, so the setting decides what
+  is reported rather than what is looked at, and an unreadable value reports
+  everything: a stale workflow should leave the check louder than intended,
+  never silent. It does not cover the nodes' own warnings about their inputs,
+  which are about your wiring rather than the model's prose.
+
+- **`fix_once` on the Options node acts on what the check found**, instead of
+  only reporting it. Off by default, and off is a promise: the answer you get
+  is exactly what the model wrote.
+
+  On, the alignment line of the frame tasks goes back where it is missing --
+  fixed text the node already formats, so no model runs and nothing can
+  regress -- and the mechanical findings buy exactly one more generation, with
+  those findings folded into the prompt as rules. Once, never a loop. The
+  re-run is refused outright on an answer missing half its fields, because a
+  model that cannot hold the format will not hold it on the second pass; the
+  constraints travel inside the prompt rather than as a second conversational
+  turn, keeping the single-turn shape the LoRAs were trained on; and the second
+  answer is kept only if it is genuinely better, ties going to the first. The
+  worst case is a minute spent, never a worse prompt. Whatever it did is said
+  on the node.
+
+  What is looked for lives in `minimax_h3_rewriter/checks.py` and what is done
+  about it in `minimax_h3_rewriter/repair.py`, both free of ComfyUI, with the
+  test suite under `tests/` covering them:
+  `cd tests && ../.venv/Scripts/python.exe -m pytest`.
+
+Both widgets are appended after `prompt_file`, so a workflow saved before this
+release keeps every other value where it was.
+
+- **A Russian locale.** Set ComfyUI to Russian and the nodes come up in
+  Russian: what each node is, and all 153 widget tooltips -- the long
+  explanations, which are what you actually read.
+
+  Widget names stay English on purpose. They are identifiers rather than
+  prose: the keys in the workflow JSON and in an API call, what the READMEs
+  and the issue tracker call things, and what the tooltips name widgets by.
+  Translating the label would leave every one of those references pointing at
+  nothing, so a Russian tooltip says `repeat_last` and it matches the node.
+  `device` is left English as well -- it is built at run time and ends with the
+  machine's own GPU list, which a static file must not carry.
+
+  Translations live in `locales/<lang>/nodeDefs.json` at the root of the pack;
+  adding a language is adding a folder. `python tools/locales.py report ru`
+  says what is missing and what has gone stale, asking a running ComfyUI what
+  the nodes are rather than a checked-in copy that could drift; `fill` adds the
+  missing keys in English to translate over, never touching one already done.
+  The tests cover what fails silently: a key ComfyUI does not read, a node from
+  another pack, an empty string, a file that is not JSON.
+
+  A node already on a canvas keeps the title it was created with -- that title
+  is saved in the workflow, so switching language does not rename it.
+
+## 0.18.2 - 2026-08-30
+
+### Added
+
+- **The answer is checked.** Every fresh answer is read back against the rules
+  of MiniMax's own writing guides before it leaves the node: shot numbering and
+  cut times against the requested duration, dialogue markup and its language
+  tags, reference tags against both what the task can carry and what is
+  actually connected, retention entries for every defined subject, the
+  350-500-word guidance, and the fixed alignment line of the frame tasks. What
+  it finds is said in three places -- a toast in the ComfyUI window with the
+  first few findings, the node's caption with the full list above the answer,
+  and the console -- and nothing is ever blocked: the model is sometimes right
+  to bend a rule, and only you know whether this is that time. A clean answer
+  adds not a single line. Prompts handed on from the library are not
+  re-checked; they were checked when they were written.
+
+  The rules live in one pure module, `minimax_h3_rewriter/checks.py`, with a
+  test suite under `tests/` that runs without ComfyUI:
+  `cd tests && ../.venv/Scripts/python.exe -m pytest`.
+
+- **The `bypass` and `repeat_last` badges are always on the title bar**, not
+  only when the node is collapsed or the switch is on. On the tall writers the
+  widget itself is a screenful away, and a badge that appears and disappears
+  moves its neighbour around; two badges in a stable row are a switch you can
+  hit without scrolling, expanded or not.
+
+- **The nodes' own warnings became toasts too**, under "Heads-up" instead of
+  "Self-check": a reference the chosen task will not read (the 8B's spare
+  frame, the 27B tab's unread frames, the Universal Writer's ignored T2VA
+  references), a saved prompt whose references no longer match what the node
+  is shown, and a captioner that came back with nothing for a connected asset.
+  All of these were already said on the node and in the console; now they are
+  also impossible to miss.
+
+## 0.18.1 - 2026-08-30
+
+### Added
+
+- **A bundled example workflow** (issue #10). `example_workflows/` ships a
+  ready graph that ComfyUI's template browser lists under this pack's name:
+  the stock MiniMax-H3 Ref2VA and FL2VA templates with a Universal Rewriter
+  and a Universal Writer wired in ahead of each branch. The checkpoints it
+  names are the stock ones, offered for download when missing.
+
+- **Qwen3.8-27B in the writer catalog.** `unsloth/Qwen3.8-27B-GGUF` joins the
+  guided writers' list in four of unsloth's dynamic quants - Q2_K_XL (9.2 GB,
+  a 16 GB card), Q3_K_XL (12.2 GB), Q4_K_M (15.3 GB, a 24 GB card) and the
+  near-lossless Q6_K_XL (23.6 GB, a 32 GB card) - the strongest prose the list
+  offers at every one of those sizes. The writers are where it belongs:
+  Qwen3.8-27B has 65 layers where the 27B rewriter's LoRA was trained on
+  Qwen3.6-27B's 64, so the adapter cannot ride it - as a rewriter base it
+  would run as a plain model. The entries are merged into existing
+  installations' `models.json` the usual way; nothing you edited is touched.
+
+- **The model scans look in `text_encoders` and `clip` now, and the adapter
+  scan in `loras`.** ComfyUI's own GGUF loaders file Qwen-VL encoders under
+  `text_encoders` and `clip`, so that is where people already keep the files -
+  and a scan that skipped those folders read as "can't find any models"
+  (issue #11 and more than one report since). `models/LLM` stays the
+  recommended home; the wider scan is for the files already living elsewhere.
+  The architecture and shape filters still apply, so the new folders add the
+  models that fit rather than everything they hold - and the guided writers,
+  which accept any architecture, now skip the encoder halves of image
+  pipelines and embedding models (`t5`, `t5encoder`, `bert`, `nomic-bert`,
+  `nomic-bert-moe`, `clip`): no chat template, nothing to say, and every
+  `text_encoders` folder has one.
+
+### Fixed
+
+- **Workflows saved before 0.17.2 load with the right Options values again**
+  (issue #11). ComfyUI restores a node's widget values by position, and 0.17.2
+  put `merge_lora` into the middle of the list, between `use_lora` and
+  `auto_download`. Every Options node saved before that came back one slot
+  askew: `merge_lora` showed a boolean, `gpu_layers` got `n_ctx`'s 8192,
+  `n_ctx` read `auto` as NaN -- and validation refused the whole graph with
+  four errors that named none of this.
+
+  The node now recognizes the old layout on load -- a boolean in
+  `merge_lora`'s slot, which a combo never saves -- and deals the values back
+  onto the widgets they were written from, with `merge_lora` at its `auto`
+  default. Nothing to redo by hand; reloading the workflow is enough.
+
+- **The Universal Rewriter's `duration` is a `FLOAT` now, like the Universal
+  Writer's.** As an `INT` it refused the wire from any float seconds source
+  that the writer accepted. The value also stays fractional all the way down:
+  the 8B path used to truncate it on the way into the request, and now `7.5`
+  arrives as `duration: 7.5s` while whole numbers keep rendering exactly as
+  before -- `10s`, not `10.0s`. The Omni tab already took fractions and snaps
+  them to the frame grid; the standalone rewriter nodes keep their integer
+  widget.
+
+## 0.18.0 - 2026-08-29
+
+### Added
+
+- **A prompt library.** `repeat_last`, added in 0.17.3, holds one answer per node
+  and forgets it when ComfyUI restarts. This is the other half: prompts you name
+  and keep, in a JSON file under the ComfyUI user directory, available to every
+  workflow and every node.
+
+  **Save the last prompt** on any writer or rewriter opens a box asking for a
+  name, a description and any number of groups -- the groups already in the file
+  come back as chips, a new one is a word and Enter. What is saved is the run
+  itself: the text, the sections after it, the task, the model, the ratio, the
+  duration, the seed, and a 50x50 thumbnail of every reference the node was
+  shown.
+
+  Those thumbnails are taken **during the run**, which is the only moment they
+  can be: by the time a save box opens the node has returned strings and the
+  tensors are gone. So the session record and the library record are one shape,
+  and saving is a matter of naming something already complete. Only what
+  genuinely exists is measured -- an image has a size; a clip that arrived as a
+  real `VIDEO` has frames, seconds and a frame rate, while one that arrived as a
+  batch of images has a frame count and nothing else, having no container to
+  ask; a sound has a duration, a rate and a channel count. References are
+  labelled by position, `ref1-image` and `ref2-audio`, rather than by a file name
+  a node cannot see.
+
+  **Prompt library** opens the list: the node's own last answer first, then the
+  file, newest first. Filter by group with the chips, or search across names,
+  descriptions, prompts, groups, references and settings at once. **Use** points
+  the node at a record, **Delete** removes it for good.
+
+  A chosen prompt reaches `rewritten_prompt` and the section outputs exactly as a
+  fresh one would -- no model is loaded, nothing is generated, and the run takes
+  about a tenth of a second against the fifty a real rewrite costs. A record
+  written by another kind of node works too: matching classes hand the outputs
+  back verbatim, and otherwise the text is split into sections by the node
+  reading it, the same way it splits an answer it wrote itself.
+
+  The choice lives in a hidden widget, so it is saved with the workflow and
+  reaches an API run -- a graph reopened tomorrow returns the same prompt. A
+  record deleted since stops the run and says so rather than quietly writing a
+  new one: the graph asked for a particular prompt.
+
+- **A saved prompt is checked against the references the node is actually being
+  shown.** A T2VA prompt is self-contained, but a prompt for a frame task or for
+  Ref2VA names its references and describes them inside the text, so reusing one
+  over a different set of assets describes something that is not there. When the
+  kinds and counts no longer match what the record was written for, the node says
+  so -- on the node, in the console -- and hands the prompt on anyway, because
+  reusing a description as a template is a legitimate thing to do. The thumbnails
+  on the card cover what no check can: one picture swapped for another of the same
+  kind.
+
+- **Copy buttons in the library window**, on every record and on the Last Prompt
+  row, and beside Save in the save box. They put the prompt on the clipboard
+  without pointing the node at anything.
+
+- **`prompt_file` on the Options node, and a `New prompt file` button beside
+  it.** One file is one working set, `global` unless a workflow says otherwise,
+  and the nodes wired to that Options node save into it and list it. The files
+  are plain JSON in `ComfyUI/user/minimax_h3_rewriter/prompts/`, so they can be
+  edited by hand, copied between machines or deleted. A record with one thumbnail
+  and a full-length prompt is about 11 KB.
+
+- **A badge for `repeat_last`, next to the one `bypass` already had.** It reads
+  `REPEAT` when the node is handing back its own last answer and `LIBRARY` when a
+  saved prompt is driving it, shows the dim switch name on a collapsed node, and
+  toggles the switch when clicked -- the same behaviour as the bypass badge, which
+  it now shares its implementation with. It does not recolour the node: bypass
+  does that, the two appear together often, and one colour cannot mean both.
+
+### Changed
+
+- **`repeat_last` is the one switch, and the library window only chooses what it
+  hands back.** Picking a saved prompt switches it on; switching it off gives the
+  node back to the model and leaves the choice waiting, and `Write a new one` in
+  the window does both. Before this, a saved prompt applied whatever the switch
+  said, which left the visible control doing nothing while an invisible one
+  decided -- the button now reads `Library: <name>`, with `(repeat_last is off)`
+  after it when that is the case.
+
+## 0.17.3 - 2026-08-29
+
+### Added
+
+- **`repeat_last`, on every writer, rewriter and captioner.** A switch that hands
+  back the answer the node produced last instead of running the model again. With
+  nothing kept yet the node runs once, keeps what it wrote and says so; from then
+  on it returns that same text for as long as the switch is on, whatever else
+  changes. That is the point of it: a fifty-second rewrite is not something to pay
+  for twice while wiring up everything downstream of it.
+
+  ComfyUI's own cache cannot do this. A node's cache key is its class, its
+  `IS_CHANGED` value and every input it received, so editing the prompt is exactly
+  what drops the entry, and `IS_CHANGED` can only add invalidation, never mask it.
+  So the answers are kept in a store of the pack's own, one per node.
+
+  The store lives in memory for the ComfyUI session and nowhere else: it is not
+  written to disk, it does not travel with the workflow, and a restart empties it.
+  Every run says where its answer came from in three places -- the caption under
+  the node, the ComfyUI console, and the switch's own tooltip, which carries the
+  time it was kept, its length and the opening of the text. When the inputs no
+  longer match the ones that produced it, all three say so rather than pretending
+  nothing changed. `bypass` still wins over it.
+
+  On the two caption nodes it is the caption that is kept, not the assembled
+  block: the numbering belongs to the chain, so the line is written again around
+  whatever arrives on `previous`, and an asset connected since is described for
+  real.
+
+### Fixed
+
+- **The `bypass` badge and tint were missing from three nodes.** The purple
+  colour and the BYPASSED chip that mark a switched-off node come from an
+  extension with a list of node types in it, and that list was never extended
+  when the 8B rewriter, the Omni rewriter and the Universal Rewriter were added.
+  All nine nodes with a `bypass` switch now look alike, collapsed or not, and the
+  chip on a collapsed node toggles the switch as it does everywhere else.
+
+## 0.17.2 - 2026-08-29
+
+### Added
+
+- **`merge_lora`, and about twice the tokens a second on the safetensors
+  route.** PEFT keeps an attached adapter beside the base model and computes it
+  on every token, on top of the base weights; folding it into those weights once
+  at load does the same arithmetic ahead of time. Measured on Qwen3-VL-8B with
+  the 8B adapter, 128 tokens on a 5090: **14.3 tokens a second attached against
+  25.0 folded in** on `bfloat16`, and 13.6 against 25.1 on `nf4`. The merge
+  itself costs 0.07 s on an unquantized base and 4.6 s on a bitsandbytes one,
+  which has to be dequantized and quantized back a layer at a time.
+
+  `auto`, the default, takes the free half: it folds the adapter in on an
+  unquantized base and leaves it attached on `nf4`/`int8`, where the cost is
+  real and so is the extra rounding. `on` folds it in there as well; `off` is
+  the behaviour up to now. The GGUF route is untouched -- llama.cpp applies an
+  adapter its own way, and `merge_lora` says nothing about it.
+
+  **A folded run is not word-for-word the attached one.** `W + BA` computed once
+  is not bit-for-bit `Wx + B(Ax)` computed per token, so a token here and there
+  falls differently and the sentence follows it: two differences in 128 tokens
+  on `bfloat16` at the same seed, more on `nf4`, where PEFT prints a warning of
+  its own about the requantization. Neither answer is the better one. A workflow
+  tuned to the token is a reason to set `off`.
+
+  Worth recording what turned out not to be the problem, since the measuring was
+  the work: reusing a loaded model costs 0.00 s, the tokenizer 0.28 s and the
+  processor 0.48 s against a 6-15 s load, and `device_map` pinned to one card
+  came out level with `"auto"`. The adapter was the whole of it.
+
+## 0.17.1 - 2026-08-28
+
+### Added
+
+- **32:9 and 48:9**, for the frame that spans more than one monitor -- 32:9 is
+  two 16:9 screens side by side, 48:9 three. The value travels as text, one line
+  of the task message, and neither this pack nor MiniMax's guides parse it, so
+  the list was free to grow. Worth knowing before you reach for them: no adapter
+  was trained on those strings, so the model composes wider by reading the
+  request rather than by recognising a shape it was taught.
+
+  The picker had to grow with it. Every rectangle is drawn to its own proportion
+  inside one budget, so the wide end reads as how little height is left, and at
+  the old budget 32:9 and 48:9 came out 8 and 6 pixels tall -- the second one
+  clamped, both of them the same line. The budget is wider now and the floor
+  lower, which steps 21:9, 32:9 and 48:9 apart at roughly 15, 10 and 6 pixels. A
+  node too narrow to hold eight of them wraps the row onto a second line and
+  grows by exactly that much, rather than cutting the last rectangles off.
+
+  Requested by [@Geese586](https://github.com/Geese586) in
+  [#9](https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/issues/9).
+
+- **`aspect_ratio`, an input on every writer and rewriter**, because the shape of
+  the frame is usually decided elsewhere in the graph and spelled differently
+  there. ComfyUI's own Resolution Selector calls 16:9 `16:9 (Widescreen)`; a size
+  node says `3840x1080`; a divider says `1.78`. All three are read, and a label
+  around the pair is read through -- the number pair is what counts, wherever it
+  sits. A frame size within 2% of a listed ratio is called by that ratio's name,
+  which is what turns `1376x768` -- the Resolution Selector's own answer for 16:9
+  at 1 MP -- into `16:9` rather than into `43:24`. A ratio that is on no list
+  passes through as itself, which is how `2.39:1` and `5:4` get in, and something
+  that is not a ratio at all is refused by name rather than composed for.
+
+  The socket takes a `STRING` or a `COMBO` link, so the primitive that already
+  drives the Resolution Selector drives this from the same wire. Draw that one
+  from the selector first: a primitive adopts the type of whatever it is plugged
+  into first, and a primitive that has become a STRING has nothing a COMBO widget
+  will take.
+
+  It outranks the picker while it is connected, and the interface says so: the
+  squares dim, nothing stays lit, clicks are refused. Unplugging clears the
+  field, because the upstream node writes its value into the widget -- that is
+  how a wire feeds a widget input at all -- and a value left sitting there would
+  go on outranking a picker that has just lit up again.
+
+- **The Open model list button on the Prompt Rewriter Omni node**, which was the
+  one node in the pack without it. Its tooltip now names `models_8b` and
+  `models_omni` beside `models`, since three rewriters read three sections and
+  the button opens the file for all of them.
+
+### Changed
+
+- **The ratio picker has no socket any more.** `resolution` is `socketless`, on
+  every node that has it: a ratio arriving from the graph belongs on
+  `aspect_ratio`, which reads the spellings other nodes actually use, and two
+  doors into one setting meant the parser could be walked around. A workflow that
+  had `resolution` converted to an input loses that link when it loads -- the
+  input it pointed at no longer exists -- and the value it was feeding is worth
+  checking on the picker afterwards.
+
+### Fixed
+
+- **The buttons stop appearing in the prompt.** `Open model list` and `Open guide
+  folder` are canvas buttons with no value, but they still reached the API-format
+  export as `"Open model list": null` -- an input the node never declared, in
+  every workflow using this pack. `serialize = false` only keeps a widget out of
+  the saved `widgets_values`; the prompt needs `serializeValue` as well. ComfyUI
+  drops unknown keys, so this was noise rather than a failure.
+
+- **Four things the README said that the code did not do.** The captioner was
+  described as costing no runtime on a machine that had run one rewrite, which is
+  true only when that rewrite went through the binaries: `gguf_runtime` defaults
+  to `llama-cpp-python` wherever the wheel imports, and a safetensors base never
+  touches llama.cpp at all, so for most installations the first caption is what
+  pays for the archive. `llama_backend = auto` was documented as Vulkan at 34 MB
+  when it takes CUDA -- 511 MB -- on Windows with an NVIDIA card of compute
+  capability 8.6, 8.9, 12.0 or 12.1. The unpacked runtime was described as "its
+  own `runtime/` folder" when the lookup is per backend, so a Vulkan build
+  unpacked by hand does not answer for a run that resolved to CUDA. And the
+  requirements table listed `llama-cpp-python` as what GGUF needs, against a
+  section three pages down headed "nothing to install".
 
 ## 0.17.0 - 2026-08-26
 

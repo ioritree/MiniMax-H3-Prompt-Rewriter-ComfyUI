@@ -36,8 +36,7 @@ from comfy_api.latest import io
 from . import clip_caption, guide_prompt, media, mtmd_engine
 from .constants import (
     DEFAULT_OUTPUT_LANGUAGE,
-    DURATION_MAX,
-    DURATION_MIN,
+    DURATION_CEILING,
     OUTPUT_LANGUAGE_NAMES,
     REF_OUTPUT_FIELDS,
     RESOLUTIONS,
@@ -188,8 +187,8 @@ class MiniMaxH3ReferenceWriterRef(io.ComfyNode):
                 io.Int.Input(
                     "duration",
                     default=10,
-                    min=DURATION_MIN,
-                    max=DURATION_MAX,
+                    min=1,
+                    max=int(DURATION_CEILING),
                     step=1,
                     tooltip="Target clip length in seconds; drives shot count and pacing.",
                 ),
@@ -432,7 +431,8 @@ class MiniMaxH3ReferenceWriterRef(io.ComfyNode):
 
         text = _guided_text(
             guide_prompt.REF_MODE, writer, prompt, resolution, duration, block,
-            greedy, int(seed), keep_model_loaded, settings, progress, output_language,
+            greedy, int(seed), keep_model_loaded, settings, progress,
+            language=output_language,
         )
         _head, sections = split_sections(text, REF_OUTPUT_FIELDS, fallback="detailed_description")
         _report(progress, text, sections, REF_OUTPUT_FIELDS)

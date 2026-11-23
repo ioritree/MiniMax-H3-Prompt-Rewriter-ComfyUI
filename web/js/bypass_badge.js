@@ -1,33 +1,62 @@
 import { app } from "../../scripts/app.js";
 
-
-const BYPASS_NODES = [
+const WRITERS = [
     "MiniMaxH3PromptRewriter",
+    "MiniMaxH3PromptWriter8B",
+    "MiniMaxH3PromptWriterOmni",
     "MiniMaxH3GuidedWriter",
     "MiniMaxH3GuidedWriterRef",
-    "MiniMaxH3ReferenceCaption",
-    "MiniMaxH3MultiReferenceCaption",
     "MiniMaxH3UniversalWriter",
+    "MiniMaxH3ApiUniversalWriter",
+    "MiniMaxH3UniversalRewriter",
+    "MiniMaxH3QwenRewriter",
+    "MiniMaxH3PH3Writer",
+    "MiniMaxH3ImagePromptWriter",
     "MiniMaxH3ReferenceWriterRef",
 ];
-
-const WIDGET = "bypass";
-const BADGE = "__minimaxH3BypassBadge";
+const CAPTIONERS = ["MiniMaxH3ReferenceCaption", "MiniMaxH3MultiReferenceCaption"];
+const REDUCERS = ["MiniMaxH3PromptReducer"];
+const INSERTERS = ["MiniMaxH3EffectEmbeddings", "MiniMaxH3LoraTriggers"];
 
 const TITLE_COLOR = "#5B3A7E";
 const BODY_COLOR = "#3A2750";
-const ON_BG = "#7A3FA0";
-const ON_FG = "#FFFFFF";
 const OFF_BG = "#353535";
 const OFF_FG = "#B0B0B0";
 
-function widgetOf(node) {
-    return node.widgets?.find((w) => w.name === WIDGET);
+function widgetOf(node, name) {
+    return node.widgets?.find((w) => w.name === name);
 }
 
-function isBypassed(node) {
-    return !!widgetOf(node)?.value;
+function chosenName(node) {
+    const raw = widgetOf(node, "library_pick")?.value;
+    if (!raw) return "";
+    try {
+        return JSON.parse(raw)?.name || "";
+    } catch (error) {
+        return "";
+    }
 }
+
+const BADGES = [
+    {
+        widget: "bypass",
+        nodes: [...WRITERS, ...CAPTIONERS, ...REDUCERS, ...INSERTERS],
+        on: () => "BYPASSED",
+        off: "bypass",
+        onBg: "#7A3FA0",
+        onFg: "#FFFFFF",
+        tint: true, always: true,
+    },
+    {
+        widget: "repeat_last",
+        nodes: [...WRITERS, ...CAPTIONERS],
+        on: (node) => (chosenName(node) ? "LIBRARY" : "REPEAT"),
+        off: "repeat_last",
+        onBg: "#3B7DD8",
+        onFg: "#FFFFFF",
+        tint: false, always: true,
+    },
+];
 
 function inheritedGetter(node, name) {
     for (let proto = Object.getPrototypeOf(node); proto; proto = Object.getPrototypeOf(proto)) {
@@ -37,7 +66,7 @@ function inheritedGetter(node, name) {
     return undefined;
 }
 
-function tint(node) {
+function tint(node, spec) {
     const swaps = [
         ["renderingColor", "color", TITLE_COLOR],
         ["renderingBgColor", "bgcolor", BODY_COLOR],
@@ -48,7 +77,7 @@ function tint(node) {
         Object.defineProperty(node, name, {
             configurable: true,
             get() {
-                if (!isBypassed(this)) return inherited.call(this);
+                if (!widgetOf(this, spec.widget)?.value) return inherited.call(this);
                 const before = this[field];
                 this[field] = colour;
                 try {
@@ -75,37 +104,40 @@ function toggle(node, widget) {
     node.setDirtyCanvas(true, true);
 }
 
-function badgeOf(node) {
-    let badge = node[BADGE];
-    if (!badge) badge = node[BADGE] = new window.LGraphBadge({ text: "" });
+function badgeOf(node, spec) {
+    const key = `__minimaxH3Badge_${spec.widget}`;
+    let badge = node[key];
+    if (!badge) badge = node[key] = new window.LGraphBadge({ text: "" });
     return badge;
 }
 
-function refresh(node) {
-    const badge = badgeOf(node);
-    const widget = widgetOf(node);
+function refresh(node, spec) {
+    const badge = badgeOf(node, spec);
+    const widget = widgetOf(node, spec.widget);
     const on = !!widget?.value;
 
-    if (!widget || (!on && !node.flags?.collapsed)) {
+    if (!widget || (!on && !node.flags?.collapsed && !spec.always)) {
         badge.text = "";
         badge.onClick = undefined;
         return badge;
     }
 
-    badge.text = on ? "BYPASSED" : "bypass";
-    badge.fgColor = on ? ON_FG : OFF_FG;
-    badge.bgColor = on ? ON_BG : OFF_BG;
+    badge.text = on ? spec.on(node) : spec.off;
+    badge.fgColor = on ? spec.onFg : OFF_FG;
+    badge.bgColor = on ? spec.onBg : OFF_BG;
     badge.onClick = () => toggle(node, widget);
     return badge;
 }
 
-function addBadge(nodeType) {
+function addBadges(nodeType, specs) {
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
         const result = onNodeCreated?.apply(this, arguments);
-        tint(this);
-        if (window.LGraphBadge && Array.isArray(this.badges)) {
-            this.badges.push(() => refresh(this));
+        for (const spec of specs) {
+            if (spec.tint) tint(this, spec);
+            if (window.LGraphBadge && Array.isArray(this.badges)) {
+                this.badges.push(() => refresh(this, spec));
+            }
         }
         return result;
     };
@@ -121,6 +153,7 @@ function addBadge(nodeType) {
 app.registerExtension({
     name: "minimax_h3_rewriter.bypass_badge",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (BYPASS_NODES.includes(nodeData.name)) addBadge(nodeType);
+        const specs = BADGES.filter((spec) => spec.nodes.includes(nodeData.name));
+        if (specs.length) addBadges(nodeType, specs);
     },
 });

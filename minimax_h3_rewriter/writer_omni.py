@@ -35,17 +35,32 @@ from dataclasses import dataclass
 
 from comfy_api.latest import io
 
-from . import catalog, discovery, engine, media, mtmd_engine
+from . import (
+    aspect,
+    catalog,
+    checks,
+    discovery,
+    engine,
+    library,
+    media,
+    memory,
+    model_sections,
+    mtmd_engine,
+    previews,
+    refmods,
+    snapshot,
+)
 from .catalog import FORMAT_GGUF, FORMAT_TRANSFORMERS
 from .constants import (
     DEFAULT_OUTPUT_LANGUAGE,
-    DURATION_MAX,
-    DURATION_MIN,
+    MERGE_AUTO,
     OUTPUT_FIELDS,
     OUTPUT_LANGUAGE_NAMES,
     QUANTIZATIONS,
     REF_OUTPUT_FIELDS,
     RESOLUTIONS,
+    duration_options,
+    duration_tooltip,
 )
 from .fields import split_sections
 from .nodes import (
@@ -60,23 +75,42 @@ from .nodes import (
     _announce,
     _ensure_pair,
     _ensure_present,
+    _find,
     _gguf_text,
+    _holding,
     _refuse_problem,
+    _fix_once,
     _report,
     _resolve_adapter,
+    _shown,
+    _valid,
     _verify_base_model,
+    _warn_off_base,
 )
-from .progress import NodeProgress
+from .progress import NodeProgress, announce, refuse
 from .prompt_template_omni import (
+    FRAME_RATE,
+    LABEL_PREFIX,
     REF_TASK,
     TASKS,
     build_messages,
+    effective_duration,
     expected_pictures,
     normalize_task,
 )
-from .universal import ALL_FIELDS, kind_of, layout_of
+from .references import (
+    SLOTS_OUTPUT_TOOLTIP,
+    SLOTS_TYPE,
+    clip_sounds,
+    pipeline_notes,
+    slot_bundle,
+    turn_order,
+)
+from .universal import ALL_FIELDS, kind_of, layout_of, sounding
 
 log = logging.getLogger(__name__)
+
+SECTION = "models_omni"
 
 BASE_REPO_OMNI = "Qwen/Qwen2.5-Omni-7B"
 
@@ -94,6 +128,8 @@ CONTEXT_SLACK = 1024
 
 KIND_NAMES = {"image": "picture", "video": "clip", "audio": "sound"}
 
+TEXT_TASK = "t2av"
+
 FIELDS_FOR_TASK = {name: OUTPUT_FIELDS for name in TASKS}
 FIELDS_FOR_TASK[REF_TASK] = REF_OUTPUT_FIELDS
 
@@ -110,15 +146,32 @@ class BaseChoice:
     file: str = ""
     mmproj: str = ""
     local: bool = False
+    copy_of: str = ""
 
 
 @dataclass(frozen=True)
 class Reference:
-    """One connected, switched-on reference, in the order it will be labelled."""
+    """One connected, switched-on reference, in the order it will be labelled.
+
+    ``sound`` marks a clip whose own sound is switched on as a reference too.
+    ``clip`` is set on the reference ``with_sounds`` makes of that sound -- the
+    slot of the clip it came out of -- so the checks that count what was
+    connected can tell it from a sound that was.
+
+    ``refmod`` is set for a RefMod, whose ``value`` is then what it decodes to:
+    the model is shown that, and the generator is handed the RefMod.
+    """
 
     slot: str
     kind: str
     value: object
+    sound: bool = False
+    clip: str = ""
+    refmod: object = None
+
+    @property
+    def handed(self):
+        return self.refmod if self.refmod is not None else self.value
 
 
 def render(messages: list[dict], counts: list[int] | None = None) -> tuple[str, str]:
@@ -165,6 +218,7 @@ def arrange(supplied: dict | None, raw_layout: str) -> tuple[list[Reference], in
     """
     connected = {name: value for name, value in (supplied or {}).items() if value is not None}
     order, off, _roles = layout_of(raw_layout)
+    heard = sounding(raw_layout)
 
     def slot_number(name: str) -> int:
         tail = name.rsplit("_", 1)[-1]
@@ -174,30 +228,101 @@ def arrange(supplied: dict | None, raw_layout: str) -> tuple[list[Reference], in
     known = set(named)
     named += sorted((n for n in connected if n not in known), key=slot_number)
 
-    found = [
-        Reference(name, kind_of(connected[name]), connected[name])
-        for name in named
-        if name not in off
-    ]
+    found = []
+    for name in named:
+        if name in off:
+            continue
+        value = connected[name]
+        if refmods.is_refmod(value):
+            found.append(Reference(name, value.kind, value.view, refmod=value))
+            continue
+        kind = kind_of(value)
+        found.append(Reference(name, kind, value, kind == "video" and name in heard))
     return found, len(connected) - len(found)
 
 
-def check_task(task: str, references: list[Reference]) -> None:
+def refuse_unseen(references: list[Reference], node_id=None) -> None:
+    """Stop before any weights move if a RefMod has not been decoded.
+
+    The adapter is shown the asset itself and nothing about it, so a voice it
+    cannot hear is not written from a saved description here: it is refused,
+    and the fix is on the RefMod node.
+    """
+    for reference in references:
+        if reference.refmod is not None:
+            problem = refmods.unseen(reference.slot, reference.refmod, saved_ok=False)
+            if problem:
+                refuse(node_id, problem)
+
+
+def with_sounds(references: list[Reference], task: str, node_id=None) -> list[Reference]:
+    """The references as the turn presents them, a clip's sound in front of its clip.
+
+    The adapter hears a clip's sound only as an audio reference of its own --
+    its upstream inference never reads the sound inside a video -- so a clip
+    whose sound is switched on becomes two references, ``<Audio k>`` and then
+    ``<Video m>``, the order the generator writes them in.
+    ``references.turn_order`` decides where they go, and with it which number
+    each sound takes.
+
+    A clip with no sound track stays a clip, and that is said: the generator
+    gets no sound from it either, so it must take no number here.
+    """
+    if normalize_task(task) != REF_TASK or not any(r.sound for r in references):
+        return list(references)
+    sounds, idle = clip_sounds(references)
+    if idle:
+        log.warning("[minimax_h3_rewriter.writer_omni] %s", idle)
+        announce(node_id, [("warn", idle)])
+
+    turn = []
+    entries = [(LABEL_PREFIX[r.kind], r.slot in sounds) for r in references]
+    for index, is_sound in turn_order(entries):
+        reference = references[index]
+        if is_sound:
+            turn.append(Reference(
+                f"{reference.slot} (sound)", "audio", sounds[reference.slot],
+                clip=reference.slot,
+            ))
+        else:
+            turn.append(reference)
+    return turn
+
+
+def check_task(task: str, references: list[Reference], node_id=None) -> None:
     """Refuse a task the connected references cannot serve, before anything loads.
 
     The alternative is a multi-gigabyte download followed by llama.cpp counting
     media markers and refusing, or -- worse on the frame tasks -- a rewrite that
-    quietly aligns the wrong picture with the end of the video.
+    quietly aligns the wrong picture with the end of the video. Every refusal is
+    said as a toast as well, since the console is not where anyone looks first.
     """
     task = normalize_task(task)
-    kinds = [reference.kind for reference in references]
+    kinds = [reference.kind for reference in references if not reference.clip]
 
     if task == REF_TASK:
         if not references:
-            raise ValueError(
+            refuse(
+                node_id,
                 "Ref2AV describes how a target video reuses reference assets, so it needs at "
                 "least one. Connect a picture, a clip or a sound -- or pick T2AV, which is the "
-                "task written from text alone."
+                "task written from text alone.",
+            )
+        counts = {}
+        for kind in kinds:
+            word = checks.KIND_TAG.get(kind)
+            if word:
+                counts[word] = counts.get(word, 0) + 1
+        too_many = checks.over_capacity(task, counts)
+        if too_many:
+            listed = "; and ".join(
+                f"{count} {word.lower()}(s) where {task} takes {allowed}"
+                for word, count, allowed in too_many
+            )
+            refuse(
+                node_id,
+                f"There are {listed} switched on. H3 has nowhere to put the extra "
+                f"ones, so switch those squares off.",
             )
         return
 
@@ -206,20 +331,22 @@ def check_task(task: str, references: list[Reference]) -> None:
     heard = [KIND_NAMES[kind] for kind in kinds if kind != "image"]
 
     if heard:
-        raise ValueError(
+        refuse(
+            node_id,
             f"{task.upper()} is written from pictures alone, and {', '.join(heard)} "
             f"{'is' if len(heard) == 1 else 'are'} connected. Switch those squares off, or "
-            f"pick Ref2AV, which is the task that takes clips and sound."
+            f"pick Ref2AV, which is the task that takes clips and sound.",
         )
     if pictures != wanted:
-        raise ValueError(
+        refuse(
+            node_id,
             f"{task.upper()} is written from {wanted} picture(s), and {pictures} "
             f"{'is' if pictures == 1 else 'are'} switched on. "
             + (
                 "Switch the extra squares off, or pick Ref2AV."
                 if pictures > wanted
                 else "Connect the missing picture, or switch its square back on."
-            )
+            ),
         )
 
 
@@ -229,14 +356,22 @@ _MODEL_MAP: dict[str, BaseChoice] = {}
 def _build_model_map() -> dict[str, BaseChoice]:
     """The Omni base models, in both shapes the adapter is published for."""
     mapping: dict[str, BaseChoice] = {}
+    held = []
     try:
         for entry in catalog.models_omni():
-            if entry.is_gguf:
-                mapping[entry.label] = BaseChoice(
-                    entry.repo, FORMAT_GGUF, entry.file, entry.mmproj
-                )
-            else:
+            if not entry.is_gguf:
                 mapping[entry.label] = BaseChoice(entry.repo, FORMAT_TRANSFORMERS)
+                held.append(_holding(SECTION, entry))
+                continue
+            if not entry.mmproj:
+                log.warning(
+                    "[minimax_h3_rewriter.writer_omni] '%s' has no 'mmproj', skipping", entry.name
+                )
+                continue
+            mapping[entry.label] = BaseChoice(
+                entry.repo, FORMAT_GGUF, entry.file, entry.mmproj
+            )
+            held.append(_holding(SECTION, entry))
     except Exception:
         log.warning("[minimax_h3_rewriter.writer_omni] catalog unreadable", exc_info=True)
 
@@ -249,7 +384,8 @@ def _build_model_map() -> dict[str, BaseChoice]:
             elif not discovery.gguf_header(mmproj_path)["audio"]:
                 label += " (vision only, not an Omni build)"
             mapping[f"{LOCAL_PREFIX}{label}"] = BaseChoice(
-                model_path, FORMAT_GGUF, mmproj=mmproj_path, local=True
+                model_path, FORMAT_GGUF, mmproj=mmproj_path, local=True,
+                copy_of=model_sections.copy_of(held, model_path, mmproj_path),
             )
     except Exception:
         log.warning("[minimax_h3_rewriter.writer_omni] gguf scan failed", exc_info=True)
@@ -260,19 +396,38 @@ def _build_model_map() -> dict[str, BaseChoice]:
 
 
 def model_choices() -> list[str]:
-    choices = list(_build_model_map())
+    choices = _shown(_build_model_map())
     return _announce(choices or ["(no Qwen2.5-Omni base found -- see the model list)"])
+
+
+def _gone(choice: str) -> str:
+    return (
+        f"'{choice}' is not in the base-model list any more. Pick another entry, or add one "
+        f"under \"models_omni\" in {catalog.user_file()}."
+    )
+
+
+def valid_model(choice) -> bool | str:
+    return _valid(choice, _MODEL_MAP or _build_model_map(), SECTION, _gone)
 
 
 def _resolve_model_choice(choice: str) -> BaseChoice:
     _refuse_problem(choice)
-    found = _MODEL_MAP.get(choice) or _build_model_map().get(choice)
+    found = _find(_MODEL_MAP, _build_model_map, SECTION, choice)
     if found is not None:
         return found
-    raise RuntimeError(
-        f"'{choice}' is not in the base-model list any more. Pick another entry, or add one "
-        f"under \"models_omni\" in {catalog.user_file()}."
-    )
+    raise RuntimeError(_gone(choice))
+
+
+def _unshowable(reference: Reference) -> str:
+    """One reference the safetensors route cannot take, by its slot and what it is."""
+    if reference.clip:
+        return f"the sound of '{reference.clip}'"
+    if reference.refmod is not None:
+        said, read = refmods.kind_words(reference.refmod), KIND_NAMES[reference.kind]
+        what = said if said == read else f"{said}, which H3 reads as a {read}"
+        return f"'{reference.slot}' (RefMod '{reference.refmod.name}', a {what})"
+    return f"'{reference.slot}' (a {KIND_NAMES[reference.kind]})"
 
 
 def _with_transformers(
@@ -297,24 +452,26 @@ def _with_transformers(
     the turn -- which would leave the model writing about a reference it was
     never given.
     """
-    unheard = [KIND_NAMES[r.kind] for r in references if r.kind != "image"]
+    unheard = [_unshowable(r) for r in references if r.kind != "image"]
     if unheard:
-        raise RuntimeError(
+        refuse(
+            progress.node_id,
             f"This base is a folder of safetensors, and that route can show the model "
-            f"pictures only -- {', '.join(unheard)} cannot be passed to it here. Pick one of "
-            f"the GGUF bases, which run through llama-mtmd-cli and do hear."
+            f"pictures only, so {'; '.join(unheard)} cannot be passed to it. Pick one of the "
+            f"GGUF bases, which run through llama-mtmd-cli and do hear -- or switch those "
+            f"squares off on the strip.",
         )
 
     _verify_base_model(choice.reference, progress, discovery.SHAPE_OMNI, BASE_REPO_OMNI)
     base_dir = _ensure_present(
-        choice.reference, BASE_SPEC_OMNI, settings["auto_download"], progress
+        choice.reference, BASE_SPEC_OMNI, settings, progress
     )
     log.info("[minimax_h3_rewriter.writer_omni] base model: %s", base_dir)
 
     adapter_dir = None
     if settings["use_lora"]:
         adapter_dir = _resolve_adapter(
-            FORMAT_TRANSFORMERS, settings["adapter"], settings["auto_download"], progress,
+            FORMAT_TRANSFORMERS, settings["adapter"], settings, progress,
             catalog.ADAPTERS_OMNI,
         )
 
@@ -335,7 +492,7 @@ def _with_transformers(
         keep_loaded=keep_loaded,
         device=settings["device"],
         progress=progress,
-        trust_remote_code=bool(settings.get("trust_remote_code", False)),
+        merge_lora=settings.get("merge_lora", MERGE_AUTO),
         images=images or None,
         messages=build_messages(
             prompt, task, resolution, duration, tuple(r.kind for r in references), language
@@ -351,29 +508,43 @@ def _with_transformers(
 
 
 def _attachments_for(
-    references: list[Reference], workspace, max_frames: int
+    references: list[Reference], workspace, max_frames: int, max_seconds: float = 0.0
 ) -> tuple[list[tuple[str, str]], list[int], int]:
     """Write every reference to disk, and say how many markers each is worth.
 
     A clip is the reason this returns two things. It is sampled into frames and
     each frame goes in as its own ``--image``, so one ``<Video 1>`` label stands
     in front of several media markers and the turn has to say so.
+
+    ``max_seconds`` is the length of the video being written for. A clip's
+    frames stop there, because the generator keeps no more of a reference clip
+    than that; a sound is passed whole, because ComfyUI's generator encodes
+    the whole of one.
+
+    Every file is named by its place in the turn. They share one workspace,
+    and under one name each -- ``audio.wav``, ``frame_000.png`` -- the second
+    sound or clip was written over the first, so a turn naming two of them
+    showed the model the last one twice.
     """
     attachments: list[tuple[str, str]] = []
     counts: list[int] = []
-    for reference in references:
+    for position, reference in enumerate(references):
+        name = f"ref{position:02d}"
         if reference.kind == "audio":
-            attachments.append(("audio", media.audio_file(reference.value, workspace)))
+            attachments.append(
+                ("audio", media.audio_file(reference.value, workspace, f"{name}.wav"))
+            )
             counts.append(1)
         elif reference.kind == "video":
             paths, _total, _seconds = media.video_frames(
-                reference.value, workspace, max_frames, VIDEO_MAX_PIXELS
+                reference.value, workspace, max_frames, VIDEO_MAX_PIXELS,
+                max_seconds=max_seconds, prefix=name,
             )
             attachments.extend(("image", path) for path in paths)
             counts.append(len(paths))
         else:
             paths = media.image_files(
-                reference.value, workspace, max_frames=1, prefix=reference.slot,
+                reference.value, workspace, max_frames=1, prefix=name,
                 max_pixels=IMAGE_MAX_PIXELS,
             )
             attachments.append(("image", paths[0]))
@@ -434,7 +605,7 @@ def _room_for(n_ctx: int, budget: int, model_path: str, progress: NodeProgress) 
 
 def _with_media(
     references, model_path, mmproj_path, adapter_path, messages,
-    settings, seed, greedy, keep_loaded, max_frames, progress,
+    settings, seed, greedy, keep_loaded, max_frames, progress, max_seconds=0.0,
 ) -> str:
     """Run the multimodal path: one asset per marker, in order."""
     if keep_loaded:
@@ -444,7 +615,9 @@ def _with_media(
             "subprocess"
         )
     with media.Workspace() as workspace:
-        attachments, counts, media_tokens = _attachments_for(references, workspace, max_frames)
+        attachments, counts, media_tokens = _attachments_for(
+            references, workspace, max_frames, max_seconds
+        )
         system, user = render(messages, counts)
         budget = (
             media_tokens
@@ -489,6 +662,7 @@ def rewrite_omni(
     progress: NodeProgress,
     references: list[Reference] | None = None,
     max_frames: int = media.DEFAULT_MAX_FRAMES,
+    notices: bool = True,
     language: str = DEFAULT_OUTPUT_LANGUAGE,
 ) -> str:
     """Run the Omni adapter and return the rewrite, on whichever engine fits.
@@ -496,10 +670,20 @@ def rewrite_omni(
     A function rather than a method for the same reason as the other two: the
     universal rewriter's third tab runs exactly this, and the choice between the
     engines is not worth having two copies of.
+
+    ``notices`` off is for the second run 'fix_once' asks for: the references
+    are the same ones, and what was said about them has been said.
     """
     wanted = normalize_task(task)
     references = list(references or [])
-    check_task(wanted, references)
+    check_task(wanted, references, progress.node_id)
+    notes = notices and pipeline_notes(
+        wanted, ((r.slot, LABEL_PREFIX[r.kind], r.value) for r in references if not r.clip)
+    )
+    if notes:
+        log.warning("[minimax_h3_rewriter.writer_omni] %s", " ".join(notes))
+        progress.text("\n".join(notes), force=True)
+        announce(progress.node_id, [("warn", note) for note in notes])
     choice = _resolve_model_choice(model)
 
     if choice.fmt == FORMAT_TRANSFORMERS:
@@ -513,7 +697,7 @@ def rewrite_omni(
     else:
         model_path, mmproj_path = _ensure_pair(
             choice.reference, choice.file, choice.mmproj, "Base model",
-            settings["auto_download"], progress,
+            settings, progress,
         )
     log.info("[minimax_h3_rewriter.writer_omni] base model: %s", model_path)
 
@@ -526,8 +710,9 @@ def rewrite_omni(
                 + problem
                 + "\nTurn 'use_lora' off to run it as a plain model anyway."
             )
+        _warn_off_base(model_path, discovery.BASE_NAME_OMNI, progress)
         adapter_path = _resolve_adapter(
-            FORMAT_GGUF, settings["adapter"], settings["auto_download"], progress,
+            FORMAT_GGUF, settings["adapter"], settings, progress,
             catalog.ADAPTERS_OMNI,
         )
 
@@ -536,9 +721,11 @@ def rewrite_omni(
     )
 
     if references:
+        frames, _snapped = effective_duration(duration)
         return _with_media(
             references, model_path, mmproj_path, adapter_path, messages,
             settings, seed, greedy, keep_loaded, max_frames, progress,
+            max_seconds=frames / FRAME_RATE if wanted == REF_TASK else 0.0,
         )
 
     system, user = render(messages)
@@ -575,9 +762,10 @@ DESCRIPTION = (
 )
 
 LAYOUT_TOOLTIP = (
-    "The strip's state as JSON -- which squares are switched off and what order they are in. "
-    "It is a widget so the arrangement travels with the workflow and through the API; the "
-    "interface draws it as squares instead. A slot missing from it is on, in slot order."
+    "The strip's state as JSON -- which squares are switched off, what order they are in, and "
+    "which clips have their own sound switched on as well. It is a widget so the arrangement "
+    "travels with the workflow and through the API; the interface draws it as squares "
+    "instead. A slot missing from it is on, in slot order, and a clip is silent."
 )
 
 REFERENCE_TOOLTIP = (
@@ -593,7 +781,7 @@ TASK_TOOLTIP = (
     "full-reference prompt. Only Ref2AV takes clips and sound."
 )
 
-DURATION_TOOLTIP = (
+DURATION_TOOLTIP = duration_tooltip(
     "Target clip length in seconds. MiniMax-H3 generates on a 17n+5 frame grid at 24 fps, so "
     "the model is told the next length that actually exists -- 10 seconds becomes 243 frames, "
     "10.13 s -- and it is that number the alignment line quotes back. The node does the "
@@ -633,10 +821,10 @@ class MiniMaxH3PromptWriterOmni(io.ComfyNode):
                     template=io.Autogrow.TemplatePrefix(
                         input=io.MultiType.Input(
                             "ref",
-                            types=[io.Image, io.Video, io.Audio],
+                            types=[io.Image, io.Video, io.Audio, io.Custom(refmods.TYPE)],
                             tooltip=(
-                                "A picture or batch of frames, a clip, or a sound. Its square "
-                                "appears in the strip as soon as it is connected."
+                                "A picture or batch of frames, a clip, a sound, or a RefMod. Its "
+                                "square appears in the strip as soon as it is connected."
                             ),
                         ),
                         prefix="ref_",
@@ -659,15 +847,12 @@ class MiniMaxH3PromptWriterOmni(io.ComfyNode):
                     "resolution",
                     options=list(RESOLUTIONS),
                     default="16:9",
-                    tooltip="Target aspect ratio the rewrite is composed for.",
+                    socketless=True,
+                    tooltip=aspect.PICKER_TOOLTIP,
                 ),
-                io.Float.Input(
-                    "duration",
-                    default=10.0,
-                    min=float(DURATION_MIN),
-                    max=float(DURATION_MAX),
-                    step=0.5,
-                    tooltip=DURATION_TOOLTIP,
+                io.MultiType.Input(
+                    io.Float.Input("duration", **duration_options(DURATION_TOOLTIP)),
+                    types=[io.Int],
                 ),
                 io.String.Input(
                     "prompt",
@@ -726,6 +911,27 @@ class MiniMaxH3PromptWriterOmni(io.ComfyNode):
                     optional=True,
                     tooltip=BYPASS_TOOLTIP,
                 ),
+                io.MultiType.Input(
+                    io.String.Input(
+                        "aspect_ratio",
+                        optional=True,
+                        default="",
+                        tooltip=aspect.TOOLTIP,
+                    ),
+                    types=[io.String, io.Combo],
+                ),
+                io.Boolean.Input(
+                    "repeat_last",
+                    default=False,
+                    optional=True,
+                    tooltip=memory.REPEAT_TOOLTIP,
+                ),
+                io.String.Input(
+                    "library_pick",
+                    default="",
+                    optional=True,
+                    tooltip=library.PICK_TOOLTIP,
+                ),
                 # Last, like every widget added after a node shipped: ComfyUI
                 # restores saved values by position.
                 io.Combo.Input(
@@ -739,9 +945,29 @@ class MiniMaxH3PromptWriterOmni(io.ComfyNode):
             outputs=[
                 io.String.Output(display_name="rewritten_prompt"),
                 *(io.String.Output(display_name=name) for name in ALL_FIELDS),
+                io.Custom(SLOTS_TYPE).Output(
+                    display_name="references", tooltip=SLOTS_OUTPUT_TOOLTIP
+                ),
             ],
             hidden=[io.Hidden.unique_id],
         )
+
+    @classmethod
+    def fingerprint_inputs(cls, library_pick="", repeat_last=False, **kwargs):
+        """Whether what this node would hand back without running has changed.
+
+        Neither a record edited in the library window nor an answer edited in
+        the node's own memory touches a single input, so without this the
+        answer would come back out of ComfyUI's execution cache, still saying
+        what it said before the edit.
+        """
+        return library.stamp(library_pick, repeat_last) + memory.stamp(
+            getattr(getattr(cls, "hidden", None), "unique_id", None), repeat_last
+        )
+
+    @classmethod
+    def validate_inputs(cls, model=None, references=None):
+        return valid_model(model)
 
     @classmethod
     def execute(
@@ -760,28 +986,67 @@ class MiniMaxH3PromptWriterOmni(io.ComfyNode):
         options=None,
         max_frames=media.DEFAULT_MAX_FRAMES,
         bypass=False,
+        aspect_ratio=None,
+        repeat_last=False,
+        library_pick="",
         output_language=DEFAULT_OUTPUT_LANGUAGE,
     ) -> io.NodeOutput:
+        given = dict(locals())
         progress = NodeProgress(cls.hidden.unique_id)
         empty = ("",) * len(ALL_FIELDS)
 
+        connected, switched_off = arrange(references, reference_layout)
+        previews.announce(
+            cls.hidden.unique_id,
+            ((name, refmods.seen(value)) for name, value in (references or {}).items()),
+        )
+        handed_on = slot_bundle(
+            ()
+            if normalize_task(task) == TEXT_TASK
+            else (
+                (
+                    item.slot, LABEL_PREFIX[item.kind], item.handed,
+                    item.sound and normalize_task(task) == REF_TASK,
+                )
+                for item in connected
+            )
+        )
+
         if bypass:
             progress.finish("bypassed")
-            return io.NodeOutput((prompt or "").strip(), *empty)
+            return io.NodeOutput((prompt or "").strip(), *empty, handed_on)
+
+        chosen, saved = library.picked(
+            library_pick, repeat_last, "MiniMaxH3PromptWriterOmni", 1 + len(ALL_FIELDS),
+            cls.hidden.unique_id, having=[item.kind for item in connected],
+            keep_loaded=keep_model_loaded,
+        )
+        if chosen is not None:
+            return io.NodeOutput(*chosen, handed_on)
+
+        kept = memory.repeat(
+            cls.hidden.unique_id, "MiniMaxH3PromptWriterOmni", repeat_last and not saved, given
+        )
+        if kept is not None:
+            return io.NodeOutput(*kept, handed_on)
+
+        resolution = aspect.resolve(aspect_ratio, resolution)
 
         settings = dict(DEFAULT_OPTIONS)
         if options:
             settings.update(options)
 
         wanted = normalize_task(task)
-        connected, switched_off = arrange(references, reference_layout)
         if switched_off:
             log.info(
                 "[minimax_h3_rewriter.writer_omni] %d reference(s) switched off on the strip",
                 switched_off,
             )
 
-        text = rewrite_omni(
+        if not saved and wanted != TEXT_TASK:
+            refuse_unseen(connected, cls.hidden.unique_id)
+        turn = connected if saved else with_sounds(connected, wanted, cls.hidden.unique_id)
+        text = saved or rewrite_omni(
             model=model,
             prompt=prompt,
             task=wanted,
@@ -793,16 +1058,47 @@ class MiniMaxH3PromptWriterOmni(io.ComfyNode):
             keep_loaded=keep_model_loaded,
             settings=settings,
             progress=progress,
-            references=connected,
+            references=turn,
             max_frames=int(max_frames),
             language=output_language,
         )
 
         names = FIELDS_FOR_TASK[wanted]
+        if not saved:
+            text = _fix_once(
+                text, progress,
+                lambda extra: rewrite_omni(
+                    model=model, prompt=prompt + extra, task=wanted, resolution=resolution,
+                    duration=float(duration), quantization=quantization, greedy=greedy,
+                    seed=int(seed), keep_loaded=keep_model_loaded, settings=settings,
+                    progress=progress, references=turn, max_frames=int(max_frames),
+                    notices=False, language=output_language,
+                ),
+                names, task=wanted, duration=duration,
+                having=[item.kind for item in turn],
+                fallback=BODY_FIELD[wanted], settings=settings,
+            )
         _head, sections = split_sections(text, names, fallback=BODY_FIELD[wanted])
-        _report(progress, text, sections, names)
+        if not saved:
+            _report(
+                progress, text, sections, names,
+                task=wanted, duration=duration,
+                having=[item.kind for item in turn],
+                settings=settings,
+            )
         fields = tuple(sections.get(name, "") for name in ALL_FIELDS)
-        return io.NodeOutput(text, *fields)
+        outputs = (text,) + fields
+        if saved:
+            return io.NodeOutput(*outputs, handed_on)
+        memory.keep(
+            cls.hidden.unique_id, "MiniMaxH3PromptWriterOmni", outputs, given,
+            references=snapshot.take(
+                (item.slot, item.kind, item.value) for item in connected
+            ),
+            task=wanted,
+            fields=ALL_FIELDS,
+        )
+        return io.NodeOutput(*outputs, handed_on)
 
 
 NODE_CLASS_MAPPINGS = {

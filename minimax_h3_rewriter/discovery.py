@@ -18,6 +18,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 
 from . import devices
@@ -68,8 +69,24 @@ SHAPE_OMNI = Shape(
     152064,
 )
 
-SCAN_FOLDERS = ("LLM", "transformers", "diffusers")
-GGUF_FOLDERS = ("LLM", "unet_gguf", "transformers")
+#: Where the scans look, as ComfyUI folder names. ``text_encoders`` and
+#: ``clip`` are late additions: ComfyUI's own GGUF loaders file Qwen-VL
+#: encoders there, so that is where people already keep the files, and a scan
+#: that skipped them read as "can't find any models" (issue #11). The
+#: architecture and shape filters below are what keep those folders from
+#: flooding the lists with models that cannot carry the adapters.
+SCAN_FOLDERS = ("LLM", "transformers", "diffusers", "text_encoders", "clip")
+GGUF_FOLDERS = ("LLM", "unet_gguf", "transformers", "text_encoders", "clip")
+
+#: A converted LoRA is a LoRA, so the adapter scan also checks ``loras``.
+ADAPTER_FOLDERS = GGUF_FOLDERS + ("loras",)
+
+#: Architectures that live beside the Qwens and are not language models:
+#: encoder halves of image pipelines and embedding models, with no chat
+#: template and nothing to say. The guided writers accept any architecture, so
+#: without this the t5xxl next to somebody's Qwen would be offered as a writer.
+ENCODER_ARCHS = ("t5", "t5encoder", "bert", "nomic-bert", "nomic-bert-moe", "clip")
+
 CONFIG_NAME = "config.json"
 
 #: what llama.cpp calls this architecture in general.architecture
@@ -113,7 +130,13 @@ HEADER_KEYS = (
     "adapter.type",
     "clip.has_vision_encoder",
     "clip.has_audio_encoder",
+    "general.name",
+    "general.basename",
+    "general.size_label",
+    "general.base_model.count",
 )
+
+BASE_MODEL_ENTRIES = 4
 
 #: quant_method -> (pip package, import name, PEFT can attach LoRA)
 #:
@@ -309,13 +332,11 @@ def read_local_config(directory: str) -> dict | None:
 
 def fetch_remote_config(repo_id: str, revision: str = "main") -> dict | None:
     """Fetch only ``config.json`` — 4 KB against a 20-52 GB download."""
-    import requests
-
-    from .download import _headers, access_token, endpoint
+    from .download import _headers, access_token, endpoint, http
 
     url = f"{endpoint()}/{repo_id}/resolve/{revision}/{CONFIG_NAME}"
     try:
-        response = requests.get(url, headers=_headers(access_token()), timeout=(15, 30))
+        response = http("GET", url, headers=_headers(access_token()), timeout=(15, 30))
     except Exception as error:
         log.warning("[minimax_h3_rewriter.fetch_remote_config] %s: %s", repo_id, error)
         return None
@@ -442,8 +463,8 @@ def scan_local(shape: Shape = SHAPE_27B) -> list[tuple[str, str]]:
 
 ARCH_KEYS = (
     "block_count",
-    "embedding_length",
     "nextn_predict_layers",
+    "embedding_length",
     "context_length",
     "attention.head_count",
     "attention.head_count_kv",
@@ -464,6 +485,29 @@ def _header_int(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _header_names(value) -> tuple[str, ...]:
+    """Every name the header gives the model, the file's own first.
+
+    The base name goes with its size label because llama.cpp's converter
+    writes them apart -- ``Qwen3.6`` and ``27B`` -- where a quantiser often
+    writes ``Qwen3.6-27B`` in the base name alone.
+    """
+    found = [value("general.name")]
+    basename = value("general.basename")
+    if basename:
+        found.append(f"{basename} {value('general.size_label') or ''}")
+    parents = min(_header_int(value("general.base_model.count")) or 0, BASE_MODEL_ENTRIES)
+    for index in range(parents):
+        found.append(value(f"general.base_model.{index}.name"))
+        found.append(value(f"general.base_model.{index}.repo_url"))
+    return tuple(str(name).strip() for name in found if name and str(name).strip())
+
+
+def _name_key(name: str) -> str:
+    """``Qwen/Qwen3.6-27B``, ``Qwen3.6 27B`` and ``qwen3.6-27b`` all contain ``qwen3.627b``."""
+    return re.sub(r"[^a-z0-9.]", "", name.lower())
 
 
 def _kv_per_token(value, arch: str, blocks: int | None, width: int | None) -> int | None:
@@ -525,7 +569,7 @@ def vram_note(model_path: str, n_ctx: int, device: str = "", extra_path: str = "
         header = gguf_header(model_path)
         per_token = header.get("kv_per_token") or 0
         blocks = header.get("blocks") or 0
-        layers = max(blocks - (header.get("nextn") or 0), 1)
+        layers = max(blocks, 1)
         if not card or not weights:
             return ""
 
@@ -581,13 +625,24 @@ def gguf_header(path: str) -> dict:
     as if it were a base model. The shape matters for the same reason in the
     other direction — see ``GGUF_BLOCK_COUNT``.
 
+    ``blocks`` is the trunk, what llama.cpp calls ``n_layer()``. An MTP build
+    appends its speculative-decoding draft head as extra blocks and counts them
+    in ``block_count`` -- a Qwen3.6-27B with the head says 65 -- and records how
+    many in ``nextn_predict_layers``. llama.cpp loads the head only for
+    ``--spec-type draft-mtp``, which the pack never passes, and the adapter has
+    no tensors for it, so it goes into ``draft_blocks`` and the shape check
+    compares the trunk.
+
+    ``names`` is what the file says it is, for :func:`gguf_base_note`: the name,
+    the base name with its size, and every base model it lists.
+
     Cached per file identity, so a folder of large quants costs no more than a
     stat each after the first pass.
     """
     empty = {
-        "arch": "", "kind": "", "blocks": None, "width": None,
-        "nextn": 0, "vision": False, "audio": False,
-        "context": None, "kv_per_token": None,
+        "arch": "", "kind": "", "blocks": None, "draft_blocks": 0, "width": None,
+        "vision": False, "audio": False, "context": None, "kv_per_token": None,
+        "names": (),
     }
     try:
         stat = os.stat(path)
@@ -604,7 +659,11 @@ def gguf_header(path: str) -> dict:
 
         def also(found: dict) -> tuple[str, ...]:
             arch = found.get("general.architecture")
-            return tuple(f"{arch}.{name}" for name in ARCH_KEYS) if arch else ()
+            more = tuple(f"{arch}.{name}" for name in ARCH_KEYS) if arch else ()
+            parents = min(_header_int(found.get("general.base_model.count")) or 0, BASE_MODEL_ENTRIES)
+            for index in range(parents):
+                more += (f"general.base_model.{index}.name", f"general.base_model.{index}.repo_url")
+            return more
 
         value = gguf_meta.keys(path, HEADER_KEYS, probe=also, verify=True).get
 
@@ -614,28 +673,41 @@ def gguf_header(path: str) -> dict:
             header["kind"] = "adapter" if value("adapter.type") is not None else "model"
         header["vision"] = bool(value("clip.has_vision_encoder") or False)
         header["audio"] = bool(value("clip.has_audio_encoder") or False)
+        header["names"] = _header_names(value)
         if header["arch"]:
             blocks = value(f"{header['arch']}.block_count")
             width = value(f"{header['arch']}.embedding_length")
-            nextn = value(f"{header['arch']}.nextn_predict_layers")
             header["blocks"] = int(blocks) if blocks is not None else None
             header["width"] = int(width) if width is not None else None
-            header["nextn"] = int(nextn) if nextn is not None else 0
+            draft = _header_int(value(f"{header['arch']}.nextn_predict_layers")) or 0
+            if header["blocks"] is not None and 0 < draft < header["blocks"]:
+                header["blocks"] -= draft
+                header["draft_blocks"] = draft
             header["context"] = _header_int(value(f"{header['arch']}.context_length"))
-            # An MTP head is a block in the header and not a layer in the cache:
-            # llama.cpp drops it at load, so counting it would size the KV cache
-            # for a layer that never keeps one.
-            layers = header["blocks"]
-            if layers is not None:
-                layers -= header["nextn"]
             header["kv_per_token"] = _kv_per_token(
-                value, header["arch"], layers, header["width"]
+                value, header["arch"], header["blocks"], header["width"]
             )
     except Exception:
         log.debug("[minimax_h3_rewriter.gguf_header] %s unreadable", path, exc_info=True)
 
     _GGUF_HEADER_CACHE[key] = header
     return header
+
+
+def check_encoders(mmproj_path: str, kinds: set[str]) -> None:
+    """Refuse before loading weights if the projector cannot read the inputs."""
+    header = gguf_header(mmproj_path)
+    name = os.path.basename(mmproj_path)
+    if "audio" in kinds and not header["audio"]:
+        raise RuntimeError(
+            f"'{name}' was built without an audio encoder, so this model cannot hear the clips "
+            f"you connected. Pick a captioner whose label lists 'audio', or disconnect the audio."
+        )
+    if kinds & {"image", "video"} and not header["vision"]:
+        raise RuntimeError(
+            f"'{name}' was built without a vision encoder, so this model cannot see. Pick a "
+            f"captioner whose label lists 'vision'."
+        )
 
 
 def gguf_info(path: str) -> tuple[str, str]:
@@ -680,34 +752,42 @@ def gguf_problem(
     if blocks is None or width is None:
         return ""
 
-    # A multi-token-prediction build declares one block more than it has layers:
-    # the extra one is the MTP head, and llama.cpp itself drops it -- b10310
-    # loads qwen3.8-27b-abliterated-3.69bpw-12GB-MTP with fifteen "model has
-    # unused tensor blk.64.*, ignoring" lines and then runs 64 layers. The
-    # adapter's tensors all land in blk.0-63, which are the same shape there as
-    # in Qwen3.6-27B, so it attaches and generates. Counting the head as a block
-    # refused a model that works, so it is subtracted before the comparison.
-    # Either convention counts as a match: a build whose ``block_count`` already
-    # excludes the head passes on ``blocks``, one that includes it passes on
-    # ``dense``. Accepting both is strictly more permissive than the count alone,
-    # so nothing that used to load is refused now, and llama.cpp still catches a
-    # genuine mismatch at load — which is the fallback this guard exists to make
-    # legible, not to replace.
-    dense = blocks - int(header.get("nextn") or 0)
-    if blocks_wanted not in (blocks, dense) or width != width_wanted:
-        counted = (
-            f"{blocks} blocks of width {width}"
-            if dense == blocks
-            else f"{blocks} blocks of width {width} ({dense} of them layers, "
-                 f"{blocks - dense} an MTP head)"
-        )
+    if blocks != blocks_wanted or width != width_wanted:
         return (
-            f"'{os.path.basename(path)}' has {counted}; the adapter was "
+            f"'{os.path.basename(path)}' has {blocks} blocks of width {width}; the adapter was "
             f"trained on {blocks_wanted} of {width_wanted} ({base}). It shares the '{arch}' "
             f"architecture but not the shape, so llama.cpp cannot attach the LoRA to it — "
             f"the model will run, but as a plain one with no rewriter."
         )
     return ""
+
+
+def gguf_base_note(path: str, base: str = BASE_NAME) -> str:
+    """A warning when the header names some model other than ``base``, or "".
+
+    The shape check cannot tell one release from the next. Qwen3.8-27B is
+    ``qwen35`` with 64 blocks of 5120, the same as Qwen3.6-27B, and llama.cpp
+    attaches the LoRA to it without a word -- to weights it was never trained
+    against. The names in the header can tell them apart, but they are
+    optional and written by whoever quantised the file (a fine-tune on the
+    machine this was written on gives its base name as ``KL0.0764``). So this
+    warns and never refuses, a file that names nothing gets no warning, and one
+    that names ``base`` anywhere -- a fine-tune of it, say -- is taken at its
+    word. It is asked only once :func:`gguf_problem` has passed the file, which
+    is what lets the warning say the shape fits.
+    """
+    names = gguf_header(path).get("names") or ()
+    if not names:
+        return ""
+    wanted = _name_key(base)
+    if any(wanted in _name_key(name) for name in names):
+        return ""
+    return (
+        f"The header of '{os.path.basename(path)}' calls it '{names[0]}' and never names "
+        f"{base}, the model the adapter was trained on. The shape fits, so the LoRA "
+        f"attaches, but to weights it was not trained against, and what it writes there "
+        f"is untested. If the file is a {base} under another name, ignore this."
+    )
 
 
 def gguf_problem_8b(path: str) -> str:
@@ -742,17 +822,24 @@ def _gguf_candidates(root: str, depth: int) -> list[str]:
     return found
 
 
-def _scan_gguf(kind: str, arch: str | None = GGUF_ARCH) -> list[tuple[str, str]]:
+def _scan_gguf(
+    kind: str,
+    arch: str | None = GGUF_ARCH,
+    folders: tuple[str, ...] = GGUF_FOLDERS,
+    skip: tuple[str, ...] = (),
+) -> list[tuple[str, str]]:
     """``(label, path)`` for local GGUFs of one kind, optionally one architecture.
 
     ``arch=None`` accepts anything readable, which is what the guided writers
     want: they carry the format in the prompt rather than in an adapter, so any
     instruction-following model will do and the label says which one it is.
+    ``skip`` is the counterweight -- architectures accepted by ``arch=None``
+    that are known not to be language models at all.
     """
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
 
-    for root in _comfy_roots(GGUF_FOLDERS):
+    for root in _comfy_roots(folders):
         for path in _gguf_candidates(root, GGUF_SCAN_DEPTH):
             key = os.path.normcase(os.path.abspath(path))
             if key in seen:
@@ -762,6 +849,8 @@ def _scan_gguf(kind: str, arch: str | None = GGUF_ARCH) -> list[tuple[str, str]]
             if not header["arch"] or header["kind"] != kind:
                 continue
             if arch is not None and header["arch"] != arch:
+                continue
+            if header["arch"] in skip:
                 continue
             try:
                 size = os.path.getsize(path) / 1024 ** 3
@@ -794,12 +883,12 @@ def scan_local_gguf_adapters() -> list[tuple[str, str]]:
     glance. A mismatched pair is refused by llama.cpp, by name -- which is more
     than a scan that silently left the file out of the list could manage.
     """
-    return _scan_gguf("adapter", arch=None)
+    return _scan_gguf("adapter", arch=None, folders=ADAPTER_FOLDERS)
 
 
 def scan_writer_gguf() -> list[tuple[str, str]]:
     """Return ``(label, path)`` for every local GGUF base model, any architecture."""
-    return _scan_gguf("model", arch=None)
+    return _scan_gguf("model", arch=None, skip=ENCODER_ARCHS)
 
 
 def _pair_mmproj(model: str, projectors: list[str], models: int = 1) -> str:

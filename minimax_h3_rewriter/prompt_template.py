@@ -59,7 +59,7 @@ def system_prompt(language: str = DEFAULT_OUTPUT_LANGUAGE) -> str:
 def build_messages(
     prompt: str,
     resolution: str,
-    duration: int,
+    duration: float,
     language: str = DEFAULT_OUTPUT_LANGUAGE,
 ) -> list[dict[str, str]]:
     """Build the chat messages used during LoRA training and inference."""
@@ -73,7 +73,7 @@ def build_messages(
             "role": "user",
             "content": (
                 f"resolution: {resolution}\n"
-                f"duration: {duration}s\n"
+                f"duration: {float(duration):g}s\n"
                 f"original_prompt: {prompt}"
             ),
         },

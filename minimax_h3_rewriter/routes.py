@@ -6,13 +6,140 @@ everything is guarded and logged rather than raised.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
-from . import catalog, guides
+from . import (
+    catalog,
+    embeddings,
+    guides,
+    library,
+    memory,
+    model_sections,
+    paths,
+    ph3_frames,
+    presets,
+    previews,
+    refmods,
+    resident,
+    system_prompts,
+)
 
 log = logging.getLogger(__name__)
 
 PREFIX = "/minimax_h3_rewriter"
+
+
+def _model_list(node: str) -> dict:
+    """Everything the model-list window needs to draw itself for one node."""
+    wanted = model_sections.sections_of(node) or tuple(model_sections.SECTIONS)
+    writable, refusal = True, ""
+    try:
+        catalog.writable()
+    except catalog.CatalogWriteError as error:
+        writable, refusal = False, str(error)
+    return {
+        "ok": True,
+        "path": catalog.user_file(),
+        "writable": writable,
+        "problem": refusal,
+        "sections": [model_sections.listing(one) for one in wanted],
+    }
+
+
+def _current(section: str, name: str) -> dict | None:
+    return next(
+        (one for one in catalog.raw_entries(section) if str(one.get("name") or "") == name),
+        None,
+    )
+
+
+def _save_entry(section: str, name: str, raw: dict) -> dict:
+    """Add or replace one entry, and say what the dropdown used to call it.
+
+    The label is what a saved workflow remembers, and it is built from four of
+    these fields rather than just the name -- so an edit that only touches the
+    VRAM note still moves it. Reporting both spellings is what lets the window
+    put the graph in front of the person back in step instead of leaving a
+    dangling choice for them to find later.
+    """
+    entry = model_sections.clean_entry(section, raw)
+    before = ""
+    if name:
+        held = _current(section, name)
+        if held is None:
+            raise catalog.CatalogWriteError(
+                f"'{name}' is not in this list any more -- something else changed the file. "
+                f"Reopen this window to see what is there now."
+            )
+        before = catalog.entry_label(held)
+        catalog.update(section, name, entry)
+    else:
+        catalog.add(section, entry)
+
+    after = catalog.entry_label(entry)
+    return {
+        "ok": True,
+        "entry": dict(entry, label=after),
+        "label_before": before,
+        "label_after": after,
+        "choices": {section: model_sections.choices(section)},
+    }
+
+
+def _delete_entry(section: str, name: str) -> dict:
+    """Delete one entry, and say where a node that held it can go.
+
+    Nowhere, usually: the value stays, and the next run says the entry is gone
+    rather than quietly picking some other model -- which could be a download of
+    tens of gigabytes nobody asked for. The exception is an entry whose file is
+    already here. Its scanned row was hidden as a copy of the entry and is back
+    in the dropdown now, and it is the same file, so the node moves to it.
+    """
+    held = _current(section, name)
+    before = catalog.entry_label(held) if held is not None else ""
+    gone = catalog.remove(section, name)
+    after = model_sections.held_label(section, held) if gone and held is not None else ""
+    return {
+        "ok": gone,
+        "label_before": before,
+        "label_after": after,
+        "choices": {section: model_sections.choices(section)},
+    }
+
+
+def _current_labels(asked: dict) -> dict:
+    """What remembered labels read today, per list, for a graph that has just opened."""
+    moved = {}
+    for section, labels in (asked or {}).items():
+        if section not in model_sections.SECTIONS or not isinstance(labels, list):
+            continue
+        found = model_sections.current_labels(section, [str(one) for one in labels])
+        if found:
+            moved[section] = found
+    return {"ok": True, "labels": moved}
+
+
+def _check_entry(section: str, raw: dict) -> dict:
+    """Probe one entry. Cleaned first, so a network path is refused before it is read.
+
+    A GGUF entry with a repository and no file yet is a question rather than an
+    entry: what is in there? It is answered with the files to pick from, before
+    the cleaning that would refuse it for having no file -- or no name.
+    """
+    found = model_sections.spec(section)
+    fmt = str(raw.get("format") or found.default_format).strip().lower()
+    repo = str(raw.get("repo") or "").strip()
+    if fmt == catalog.FORMAT_GGUF and repo and not str(raw.get("file") or "").strip():
+        return {"ok": True, "label": "", **model_sections.repo_files(section, repo)}
+    entry = model_sections.clean_entry(section, raw)
+    found = model_sections.check(section, entry)
+    return {"ok": True, "label": catalog.entry_label(entry), **found}
+
+
+def _unload() -> dict:
+    """Let go of what the pack is holding, in the shape the button reads."""
+    return {"ok": True, **resident.release("asked for with the button on a node")}
 
 
 def register() -> None:
@@ -41,14 +168,529 @@ def register() -> None:
             )
         return web.json_response({"ok": True, "path": path})
 
-    @routes.get(f"{PREFIX}/model_list")
-    async def model_list(request):
+    @routes.get(f"{PREFIX}/memory")
+    async def prompt_memory(request):
+        """What every node still holds, so a reloaded page can label the switch."""
+        return web.json_response(
+            {node: memory.summary(record) for node, record in memory.LAST.items()}
+        )
+
+    @routes.get(f"{PREFIX}/previews")
+    async def reference_previews(request):
+        """The last previews every node sent its strip, for a page that reloaded since."""
+        return web.json_response(previews.LAST)
+
+    from .api_model_routes import register as register_api_models
+
+    register_api_models(routes, PREFIX, web)
+
+    from .api_management_routes import register as register_api_management
+
+    register_api_management(routes, PREFIX, web)
+
+    @routes.get(f"{PREFIX}/api/profiles")
+    async def api_recipients(request):
+        from . import api_config
+
+        try:
+            return web.json_response({"profiles": api_config.public_profiles()},
+                                     headers={"Cache-Control": "no-store"})
+        except api_config.ConfigError:
+            return web.json_response({"profiles": [], "error": "API profiles are unavailable. Configure them locally."},
+                                     status=503, headers={"Cache-Control": "no-store"})
+
+    @routes.get(f"{PREFIX}/ph3/frames")
+    async def ph3_frame_previews(request):
+        node = request.query.get("node", "")
+        slot = request.query.get("slot", "")
+        if not slot:
+            return web.json_response({"slots": ph3_frames.metadata(node)})
+        try:
+            indices = [int(value) for value in request.query.get("indices", "").split(",") if value]
+            frames = await asyncio.to_thread(ph3_frames.thumbnails, node, slot,
+                                             request.query.get("token", ""), indices)
+            return web.json_response({"frames": frames})
+        except LookupError as error:
+            return web.json_response({"error": str(error)}, status=404)
+        except (TypeError, ValueError) as error:
+            return web.json_response({"error": str(error)}, status=400)
+        except Exception as error:
+            log.exception("[minimax_h3_rewriter] P-H3 frame preview failed")
+            return web.json_response({"error": str(error)}, status=500)
+
+    @routes.get(f"{PREFIX}/memory/text")
+    async def memory_text(request):
+        """The whole answer a node is holding -- the summary carries only its opening."""
+        record = memory.recall(request.query.get("node") or "")
+        return web.json_response({"text": record.text if record else ""})
+
+    @routes.post(f"{PREFIX}/memory/rewrite")
+    async def memory_rewrite(request):
+        """Replace the answer a node is holding with an edited one."""
+        body = await request.json()
+        record = memory.rewrite(body.get("node") or "", body.get("text") or "")
+        if record is None:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": (
+                        "this node is not holding an answer to edit - run it once, and what "
+                        "it writes is what can be edited"
+                    ),
+                },
+                status=404,
+            )
+        return web.json_response({"ok": True, "record": memory.summary(record)})
+
+    @routes.post(f"{PREFIX}/memory/check")
+    async def memory_check(request):
+        """The self-check over text being edited, read against the run that made it.
+
+        The record supplies the task, the duration and the references the answer
+        was written for, so an edit is judged by the rules the run was. The twin
+        of ``library/check``, for the half of the memory that lives in RAM.
+        """
+        body = await request.json()
+        record = memory.recall(body.get("node") or "")
         return web.json_response(
             {
-                "path": catalog.user_file(),
-                "models": [entry.label for entry in catalog.load()],
-                "writers": [entry.label for entry in catalog.writers()],
+                "issues": library.inspect(
+                    body.get("text") or "",
+                    task=record.task if record else "",
+                    duration=(record.about if record else {}).get("duration"),
+                    having=(
+                        library.counted_as(record.references)
+                        if record is not None
+                        else None
+                    ),
+                )
             }
+        )
+
+    @routes.get(f"{PREFIX}/references")
+    async def node_references(request):
+        """The thumbnails one node is holding -- what a save would put in the file."""
+        record = memory.recall(request.query.get("node") or "")
+        return web.json_response({"references": record.references if record else []})
+
+    @routes.get(f"{PREFIX}/library/files")
+    async def library_files(request):
+        return web.json_response({"files": library.files(), "path": library.root()})
+
+    async def prompt_body(request, limit):
+        length = request.content_length
+        if (request.content_type != "application/json" or length is None or not 0 < length <= limit
+                or request.headers.get("Content-Encoding", "identity") != "identity"):
+            raise system_prompts.PromptFileError("Expected a bounded JSON system prompt request.")
+        try:
+            body = await request.json()
+        except (ValueError, RecursionError) as error:
+            raise system_prompts.PromptFileError("Invalid system prompt request.") from error
+        if not isinstance(body, dict):
+            raise system_prompts.PromptFileError("Invalid system prompt request.")
+        return body
+
+    def prompt_response(payload, status=200):
+        return web.json_response(payload, status=status, headers={"Cache-Control": "no-store"})
+
+    @routes.get(f"{PREFIX}/system_prompts")
+    async def system_prompt_read(request):
+        name = request.query.get("name")
+        try:
+            if name is None:
+                return prompt_response({"files": await asyncio.to_thread(system_prompts.files)})
+            text, revision = await asyncio.to_thread(system_prompts.read, name)
+        except system_prompts.PromptFileError as error:
+            return prompt_response({"error": str(error)}, error.status)
+        except OSError:
+            return prompt_response({"error": "Could not list the system prompt files."}, 500)
+        return prompt_response({"name": name, "text": text, "revision": revision})
+
+    @routes.post(f"{PREFIX}/system_prompts")
+    async def system_prompt_save(request):
+        try:
+            body = await prompt_body(request, 6 * system_prompts.MAX_BYTES + 4096)
+            name = body.get("name")
+            revision = await asyncio.to_thread(
+                system_prompts.save, name, body.get("text"), body.get("revision", ""),
+            )
+        except system_prompts.PromptFileError as error:
+            return prompt_response({"error": str(error)}, error.status)
+        except OSError:
+            return prompt_response({"error": "Could not save the system prompt file."}, 500)
+        return prompt_response({"name": name, "revision": revision})
+
+    @routes.post(f"{PREFIX}/system_prompts/template")
+    async def system_prompt_template(request):
+        try:
+            body = await prompt_body(request, 4096)
+            qwen, auto_download = body.get("qwen", False), body.get("auto_download", False)
+            if type(qwen) is not bool or type(auto_download) is not bool:
+                raise system_prompts.PromptFileError("Invalid default guide settings.")
+            text = await asyncio.to_thread(system_prompts.template, body.get("task"), qwen, auto_download)
+        except system_prompts.PromptFileError as error:
+            return prompt_response({"error": str(error)}, error.status)
+        except (RuntimeError, OSError, ValueError) as error:
+            return prompt_response({"error": str(error)}, 503)
+        return prompt_response({"text": text})
+
+    @routes.get(f"{PREFIX}/library")
+    async def library_records(request):
+        name = request.query.get("file") or library.DEFAULT_FILE
+        data = library.load(name)
+        return web.json_response(
+            {
+                "file": library.clean(name),
+                "records": data["records"],
+                "groups": library.groups(data["records"]),
+                "problem": data.get("problem", ""),
+            }
+        )
+
+    @routes.post(f"{PREFIX}/library/create")
+    async def library_create(request):
+        body = await request.json()
+        try:
+            made = library.create(body.get("file") or "")
+        except OSError as error:
+            return web.json_response({"ok": False, "error": str(error)}, status=500)
+        return web.json_response({"ok": True, "file": made, "files": library.files()})
+
+    @routes.post(f"{PREFIX}/library/save")
+    async def library_save(request):
+        """Keep the session record this node is holding, under a name."""
+        body = await request.json()
+        record = memory.recall(body.get("node"))
+        if record is None:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": (
+                        "this node has nothing to save yet - run it once, and the answer it "
+                        "writes is what gets kept"
+                    ),
+                },
+                status=404,
+            )
+        try:
+            saved = library.add(
+                body.get("file") or library.DEFAULT_FILE,
+                library.from_record(
+                    record,
+                    body.get("name") or "",
+                    body.get("description") or "",
+                    body.get("groups") or [],
+                ),
+            )
+        except OSError as error:
+            return web.json_response({"ok": False, "error": str(error)}, status=500)
+        return web.json_response({"ok": True, "record": saved})
+
+    @routes.post(f"{PREFIX}/library/update")
+    async def library_update(request):
+        """Change a saved record's own text, name, description or groups."""
+        body = await request.json()
+        try:
+            saved = library.edit(
+                body.get("file") or library.DEFAULT_FILE,
+                body.get("id") or "",
+                body.get("changes") or {},
+            )
+        except OSError as error:
+            return web.json_response({"ok": False, "error": str(error)}, status=500)
+        if saved is None:
+            return web.json_response(
+                {"ok": False, "error": "that record is not in this set any more"}, status=404
+            )
+        return web.json_response({"ok": True, "record": saved})
+
+    @routes.post(f"{PREFIX}/library/check")
+    async def library_check(request):
+        """The self-check over text being edited, read against its own record.
+
+        The record supplies the task, the duration and the references it was
+        written for, so an edit is judged by the same rules the run was. An id
+        that no longer resolves still gets the rules that need no context.
+        """
+        body = await request.json()
+        record = library.find(body.get("file") or library.DEFAULT_FILE, body.get("id") or "")
+        about = (record or {}).get("about") or {}
+        having = None
+        if record is not None:
+            having = library.counted_as(record.get("references"))
+        return web.json_response(
+            {
+                "issues": library.inspect(
+                    body.get("text") or "",
+                    task=(record or {}).get("task") or "",
+                    duration=about.get("duration"),
+                    having=having,
+                )
+            }
+        )
+
+    @routes.post(f"{PREFIX}/library/delete")
+    async def library_delete(request):
+        body = await request.json()
+        try:
+            gone = library.remove(body.get("file") or library.DEFAULT_FILE, body.get("id") or "")
+        except OSError as error:
+            return web.json_response({"ok": False, "error": str(error)}, status=500)
+        return web.json_response({"ok": gone})
+
+    @routes.get(f"{PREFIX}/presets")
+    async def preset_catalogue(request):
+        """The bundled prompts, their tags and who they are owed to.
+
+        Empty when the pack was installed without the files: the picker says so
+        rather than reporting a failure the person cannot act on.
+
+        Sent as bytes serialised once, not built per request: it is a megabyte
+        and a third, and it is the same every time.
+        """
+        return web.Response(
+            body=presets.payload(),
+            content_type="application/json",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+    @routes.get(PREFIX + "/presets/record/{preset}")
+    async def preset_record(request):
+        """One preset: its label, its text and where its clip can be watched.
+
+        What a node draws itself from after a page reload. The catalogue would
+        answer the same question and cost a megabyte to do it, and a graph with
+        five of these nodes in it would pull it five times.
+        """
+        found = presets.one(request.match_info["preset"])
+        if found is None:
+            return web.json_response({"ok": False}, status=404)
+        return web.json_response({"ok": True, "preset": found})
+
+    @routes.get(PREFIX + "/presets/thumb/{preset}")
+    async def preset_thumb(request):
+        """The frame of one preset, as the WebP that is on disk.
+
+        A route rather than data URLs in the catalogue: this way the browser
+        asks for the two dozen frames a screenful needs, caches them by URL, and
+        never carries six megabytes it is not showing.
+        """
+        frame = presets.thumb(request.match_info["preset"])
+        if frame is None:
+            return web.Response(status=404)
+        return web.Response(
+            body=frame,
+            content_type="image/webp",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    @routes.post(f"{PREFIX}/presets/check")
+    async def preset_check(request):
+        """The self-check over a preset being edited on its way to the library.
+
+        The twin of ``library/check``, for text that has no record yet. The task
+        and the duration come from the preset rather than from the caller, since
+        those are facts about the clip it was written for.
+        """
+        body = await request.json()
+        found = presets.find(body.get("preset") or "")
+        seconds = (found or {}).get("seconds")
+        return web.json_response(
+            {
+                "issues": library.inspect(
+                    body.get("text") or "",
+                    task=presets.TASK,
+                    duration=round(float(seconds)) if seconds else None,
+                    having=[],
+                )
+            }
+        )
+
+    @routes.post(f"{PREFIX}/library/save_preset")
+    async def library_save_preset(request):
+        """Put a copy of a bundled preset into one of the person's own sets.
+
+        The one place a record enters the library from somewhere other than a
+        node's session memory. It arrives with the credit in its description and
+        the collection in its ``source``, so a prompt that travels on from here
+        still says whose it was.
+        """
+        body = await request.json()
+        found = presets.find(body.get("preset") or "")
+        if found is None:
+            return web.json_response(
+                {"ok": False, "error": "that preset is not in this pack"}, status=404
+            )
+        record = presets.as_record(
+            found,
+            name=body.get("name") or "",
+            description=body.get("description") or "",
+            tags=body.get("groups") if isinstance(body.get("groups"), list) else None,
+            prompt=body.get("text") or "",
+        )
+        name = body.get("file") or library.DEFAULT_FILE
+        try:
+            saved = library.add(name, record)
+        except OSError as error:
+            return web.json_response({"ok": False, "error": str(error)}, status=500)
+        return web.json_response(
+            {"ok": True, "file": library.clean(name), "record": saved}
+        )
+
+    async def off_loop(work, *args):
+        """Run blocking work on a thread, so the event loop keeps serving.
+
+        Every other route here answers from memory. These read GGUF headers, walk
+        the model folders and talk to the Hub: a cold header read costs seconds
+        per file, and the Hub calls carry 30- and 60-second timeouts. Holding the
+        loop for that stops the whole interface, the progress socket and the
+        queue along with it.
+        """
+        return await asyncio.to_thread(work, *args)
+
+    def refused(error, status=400):
+        return web.json_response({"ok": False, "error": str(error)}, status=status)
+
+    async def answered(work, *args):
+        """Run one model-list operation, telling a refusal apart from a failure.
+
+        A refusal is the ordinary case here -- a duplicate name, a network path,
+        a file that does not parse -- and the window prints it beside the field.
+        Anything else is a bug and is logged as one.
+        """
+        try:
+            return web.json_response(await off_loop(work, *args))
+        except (RuntimeError, KeyError) as error:
+            return refused(error)
+        except Exception as error:  # noqa: BLE001 - the window has to say something
+            log.error("[minimax_h3_rewriter.routes] model list: %s", error, exc_info=True)
+            return refused(error, status=500)
+
+    @routes.get(f"{PREFIX}/model_list")
+    async def model_list(request):
+        """The lists one node reads, what may go in them, and what is in them now."""
+        return await answered(_model_list, request.query.get("node") or "")
+
+    @routes.post(f"{PREFIX}/model_list/save")
+    async def model_list_save(request):
+        """Add an entry, or replace the one named by ``name``."""
+        body = await request.json()
+        return await answered(
+            _save_entry,
+            body.get("section") or "",
+            str(body.get("name") or ""),
+            body.get("entry") or {},
+        )
+
+    @routes.post(f"{PREFIX}/model_list/delete")
+    async def model_list_delete(request):
+        body = await request.json()
+        return await answered(
+            _delete_entry, body.get("section") or "", str(body.get("name") or "")
+        )
+
+    @routes.post(f"{PREFIX}/model_list/current")
+    async def model_list_current(request):
+        """What labels a workflow remembers read today, so an opened graph matches its lists.
+
+        ``{"labels": {section: [label, ...]}}`` in, and back only the ones that
+        changed. One request for a whole graph: the maps behind it walk the model
+        folders.
+        """
+        body = await request.json()
+        return await answered(_current_labels, body.get("labels") or {})
+
+    @routes.post(f"{PREFIX}/model_list/restore")
+    async def model_list_restore(request):
+        """Offer this list's packaged entries again."""
+        body = await request.json()
+        section = body.get("section") or ""
+
+        def bring_back():
+            restored = catalog.restore_packaged(section)
+            return {
+                "ok": True,
+                "restored": restored,
+                "choices": {section: model_sections.choices(section)},
+            }
+
+        return await answered(bring_back)
+
+    @routes.post(f"{PREFIX}/model_list/check")
+    async def model_list_check(request):
+        """What this entry actually is, as far as that can be known without weights."""
+        body = await request.json()
+        return await answered(_check_entry, body.get("section") or "", body.get("entry") or {})
+
+    @routes.post(f"{PREFIX}/unload")
+    async def unload_models(request):
+        """Unload every model the pack holds in this process, with no run to do it.
+
+        Off the loop like the rest of these: closing a llama.cpp context takes a
+        moment, and a run that is just starting holds the same guard. Asked for
+        in the middle of a run, it answers ``waiting`` and happens when the run
+        ends.
+        """
+        return await answered(_unload)
+
+    def _effects() -> dict:
+        directory = paths.embeddings_root()
+        return {"ok": True, "dir": directory, "effects": embeddings.state(directory)}
+
+    @routes.get(f"{PREFIX}/embeddings")
+    async def embeddings_state(request):
+        """The ten effects: which are on this disk, and what each costs in tokens."""
+        return await answered(_effects)
+
+    @routes.post(f"{PREFIX}/embeddings/download")
+    async def embeddings_download(request):
+        """Fetch the ones that are missing -- about ten megabytes for all ten.
+
+        The built-in transfer, always: the ``downloader`` option belongs to the
+        nodes, and this is a button on a dialog that has no options node behind
+        it. On this size the choice would not be worth the sentence explaining
+        it.
+        """
+        def fetch():
+            made = embeddings.fetch(paths.embeddings_root())
+            return {**_effects(), "downloaded": made["files"], "bytes": made["bytes"]}
+
+        return await answered(fetch)
+
+    def _refmods() -> dict:
+        return {"ok": True, "items": [refmods.entry_record(item) for item in refmods.listing()]}
+
+    @routes.get(f"{PREFIX}/refmods")
+    async def refmod_list(request):
+        """Every RefMod, and what each output of its node carries.
+
+        The strip asks before anything has run: a RefMod's square has to show
+        a clip or a voice, and its number, from the moment it is connected --
+        and the wire says only that it is a RefMod.
+        """
+        return await answered(_refmods)
+
+    @routes.get(f"{PREFIX}/refmods/preview")
+    async def refmod_preview(request):
+        """The picture an entry's square is drawn with, named by its dropdown value.
+
+        Looked up in the listing, never joined onto a folder, so the name in the
+        query cannot reach a file outside the RefMod folders.
+        """
+
+        def picture():
+            item = refmods.find(request.query.get("name") or "")
+            return refmods.preview_bytes(item) if item else None
+
+        try:
+            found = await off_loop(picture)
+        except Exception as error:  # noqa: BLE001 - a missing thumbnail is not a fault
+            log.info("[minimax_h3_rewriter.routes] no RefMod preview: %s", error)
+            found = None
+        if found is None:
+            return web.Response(status=404)
+        return web.Response(
+            body=found[0], content_type=found[1], headers={"Cache-Control": "no-cache"}
         )
 
 

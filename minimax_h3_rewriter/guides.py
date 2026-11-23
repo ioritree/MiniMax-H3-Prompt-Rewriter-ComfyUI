@@ -83,7 +83,15 @@ def present(kind: str) -> bool:
 
 def fetch(kind: str, progress=None) -> str:
     """Download one guide into :func:`root`, atomically. Returns its path."""
-    from .download import CONNECT_TIMEOUT, READ_TIMEOUT, DownloadError, _headers, access_token
+    from .download import (
+        CONNECT_TIMEOUT,
+        READ_TIMEOUT,
+        DownloadError,
+        _headers,
+        access_token,
+        http,
+        unreachable,
+    )
 
     import requests
 
@@ -93,14 +101,15 @@ def fetch(kind: str, progress=None) -> str:
         progress.text(f"Fetching the {GUIDE_TITLES[kind]}\nfrom {GUIDE_REPO}", force=True)
 
     try:
-        response = requests.get(
+        response = http(
+            "GET",
             source,
             headers=_headers(access_token()),
             timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
             allow_redirects=True,
         )
     except requests.RequestException as error:
-        raise DownloadError(f"Could not reach {source}: {error}") from error
+        raise DownloadError(unreachable(source, error)) from error
 
     if response.status_code >= 400:
         raise DownloadError(

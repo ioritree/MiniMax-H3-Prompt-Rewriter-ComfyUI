@@ -35,23 +35,33 @@ jobs:
       - name: The pack compiles and the nodes load
         run: |
           python -m compileall -q __init__.py minimax_h3_rewriter
-          pip install --quiet requests
+          pip install --quiet "requests>=2.32.5" "aiohttp>=3.13.5" "cryptography>=50.0.2"
           python - <<'PY'
           import json
           import pathlib
 
           from minimax_h3_rewriter.nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+          from minimax_h3_rewriter.api_writer import NODE_CLASS_MAPPINGS as api_nodes
+          from minimax_h3_rewriter.api_writer import NODE_DISPLAY_NAME_MAPPINGS as api_names
+          from minimax_h3_rewriter.qwen_node import NODE_CLASS_MAPPINGS as qwen_nodes
+          from minimax_h3_rewriter.qwen_node import NODE_DISPLAY_NAME_MAPPINGS as qwen_names
 
+          assert set(api_nodes) == {"MiniMaxH3ApiUniversalWriter", "MiniMaxH3ApiWriterOptions"}
+          assert not set(api_nodes).intersection(NODE_CLASS_MAPPINGS)
+          assert set(qwen_nodes) == {"MiniMaxH3QwenRewriter", "MiniMaxH3QwenRewriterOptions"}
+          assert not set(qwen_nodes).intersection(set(NODE_CLASS_MAPPINGS) | set(api_nodes))
+          NODE_CLASS_MAPPINGS = {**NODE_CLASS_MAPPINGS, **api_nodes, **qwen_nodes}
+          NODE_DISPLAY_NAME_MAPPINGS = {**NODE_DISPLAY_NAME_MAPPINGS, **api_names, **qwen_names}
           assert NODE_CLASS_MAPPINGS, "NODE_CLASS_MAPPINGS is empty"
           unnamed = sorted(set(NODE_CLASS_MAPPINGS) - set(NODE_DISPLAY_NAME_MAPPINGS))
           assert not unnamed, f"no display name for {unnamed}"
 
           catalog = json.loads(pathlib.Path("minimax_h3_rewriter/models.json").read_text("utf-8"))
-          for section in ("models", "writers", "captioners"):
+          for section in ("models", "writers", "captioners", "qwen_rewriters"):
               assert catalog.get(section), f"models.json has no {section}"
 
           print(f"{len(NODE_CLASS_MAPPINGS)} nodes:", ", ".join(sorted(NODE_CLASS_MAPPINGS)))
-          print("models.json:", ", ".join(f"{s} {len(catalog[s])}" for s in ("models", "writers", "captioners")))
+          print("models.json:", ", ".join(f"{s} {len(catalog[s])}" for s in ("models", "writers", "captioners", "qwen_rewriters")))
           PY
 
       - name: Release notes out of the changelogs
@@ -88,7 +98,8 @@ jobs:
           done
           for needed in __init__.py minimax_h3_rewriter/nodes.py minimax_h3_rewriter/models.json \
                         web/js/model_list_button.js pyproject.toml requirements.txt \
-                        README.md README_RU.md CHANGELOG.md CHANGELOG_RU.md LICENSE; do
+                        README.md README_RU.md README_ZH.md \
+                        CHANGELOG.md CHANGELOG_RU.md LICENSE; do
             echo "$listed" | grep -qxF "$PREFIX/$needed" || {
               echo "::error::$needed is missing from $ARCHIVE"
               exit 1
@@ -100,6 +111,9 @@ jobs:
         run: |
           unzip -p "$ARCHIVE" "$PREFIX/minimax_h3_rewriter/models.json" > /tmp/models.json
           python -c "import json; json.load(open('/tmp/models.json', encoding='utf-8')); print('models.json parses')"
+
+      - name: Check runtime coverage and private files in the release ZIP
+        run: python tools/check_release.py "$ARCHIVE" --kind release
 
       - name: Publish
         env:

@@ -9,18 +9,21 @@ its VRAM after generating unless the caller opts to keep it resident.
 from __future__ import annotations
 
 import gc
+import importlib
 import json
 import logging
 import os
 import threading
+import time
+from contextlib import contextmanager
 
-from . import devices
-from .constants import normalize_seed
+from . import devices, resident
+from .constants import MERGE_AUTO, MERGE_OFF, MERGE_ON, normalize_seed
 from .progress import NodeProgress
 
 log = logging.getLogger(__name__)
 
-_STATE: dict = {"key": None, "tokenizer": None, "model": None, "processor": None}
+_STATE: dict = {"key": None, "tokenizer": None, "model": None, "processor": None, "name": ""}
 _LOCK = threading.RLock()
 
 PREVIEW_TAIL = 280
@@ -53,8 +56,8 @@ def _needs_remote_code(directory: str) -> bool:
     """Whether loading this checkpoint would execute Python that ships with it.
 
     ``auto_map`` in ``config.json`` names modelling code inside the checkpoint,
-    which Transformers imports and runs. Detecting it is not permission to run
-    it: the answer only decides whether the caller has to have said yes.
+    which Transformers imports and runs. Such a checkpoint is refused: nothing in
+    the pack runs code that came with a model, whatever a workflow asks for.
     """
     config = os.path.join(directory, "config.json")
     if not os.path.isfile(config):
@@ -115,9 +118,10 @@ def _inner_class(config: dict):
     the outer type gets "unrecognized configuration class" and no model at all.
 
     Nothing about that class is hard-coded here: Transformers' own mapping is
-    what names it, and the only knowledge added is which way is down. Returns
-    ``None`` whenever the outer config is loadable as it stands, which is every
-    checkpoint but this family.
+    what names it -- or, on a release whose mapping leaves it out, the class
+    itself does (``_generating_class``) -- and the only knowledge added is which
+    way is down. Returns ``None`` whenever the outer config is loadable as it
+    stands, which is every checkpoint but this family.
     """
     try:
         import transformers
@@ -129,16 +133,57 @@ def _inner_class(config: dict):
 
     from .discovery import configs
 
-    if not config or config.get("model_type") in mapping:
+    outer = config.get("model_type") if config else None
+    if not config or outer in mapping:
         return None
     for nested in list(configs(config))[1:]:
-        named = mapping.get(nested.get("model_type"))
+        inner = nested.get("model_type")
+        named = mapping.get(inner)
         candidate = getattr(transformers, named, None) if named else None
+        if candidate is None:
+            candidate = _generating_class(outer, inner)
         if candidate is not None:
             log.info(
                 "[minimax_h3_rewriter._model_class] %s wraps %s, loading it as %s",
-                config.get("model_type"), nested.get("model_type"), named,
+                outer, inner, candidate.__name__,
             )
+            return candidate
+    return None
+
+
+def _generating_class(outer: str, inner: str):
+    """The class in ``outer``'s own modeling module that generates from ``inner``.
+
+    Transformers 4.57 lists Qwen2.5-Omni's thinker under no auto class at all --
+    5.x files it under image-text-to-text -- yet ships the class itself, in the
+    ``qwen2_5_omni`` module next to the wrapper (issue #20). It is found there by
+    what it declares, not by its name: built from the inner config, able to
+    generate. Only classes defined in that module count, so a text tower imported
+    from elsewhere never answers for the thinker. ``None`` when ``outer`` is not
+    one of Transformers' own models, which is the case for remote code.
+    """
+    try:
+        from transformers import GenerationMixin, PreTrainedModel
+        from transformers.models.auto.configuration_auto import (
+            CONFIG_MAPPING_NAMES,
+            model_type_to_module_name,
+        )
+
+        if not inner or outer not in CONFIG_MAPPING_NAMES:
+            return None
+        name = model_type_to_module_name(outer)
+        module = importlib.import_module(f"transformers.models.{name}.modeling_{name}")
+    except ImportError:
+        return None
+
+    for candidate in vars(module).values():
+        if (
+            isinstance(candidate, type)
+            and candidate.__module__ == module.__name__
+            and issubclass(candidate, PreTrainedModel)
+            and issubclass(candidate, GenerationMixin)
+            and getattr(candidate.config_class, "model_type", None) == inner
+        ):
             return candidate
     return None
 
@@ -175,7 +220,7 @@ def _model_class(directory: str = ""):
     raise RuntimeError("No suitable Transformers auto model class is available.")
 
 
-def _load_processor(directory: str, remote_code: bool):
+def _load_processor(directory: str):
     """The checkpoint's own processor, if it has one; ``None`` for text-only.
 
     A multimodal checkpoint needs one to turn pictures into the tensors the
@@ -194,7 +239,7 @@ def _load_processor(directory: str, remote_code: bool):
     try:
         from transformers import AutoProcessor
 
-        return AutoProcessor.from_pretrained(directory, trust_remote_code=remote_code)
+        return AutoProcessor.from_pretrained(directory, trust_remote_code=False)
     except Exception:
         log.debug("[minimax_h3_rewriter._load_processor] no processor for %s", directory, exc_info=True)
         return None
@@ -238,6 +283,24 @@ def _install_shard_hook(progress: NodeProgress, title: str, scale: float = 0.9):
         return None, None
 
 
+def _merges(setting: str, quantized: bool) -> bool:
+    """Whether to fold the adapter into the base weights at load.
+
+    PEFT otherwise runs the adapter as its own matmuls on every token, which
+    measures at roughly half the tokens per second: 14 against 25 on
+    Qwen3-VL-8B. Folding it in is free on an unquantized base (0.07 s) and
+    costs about 4.5 s on a bitsandbytes one, which has to be dequantized and
+    quantized back -- so 'auto' takes the free half and leaves the other to
+    whoever asks for it, the same way the requantization drifts further from
+    the unmerged answer than plain reassociation does.
+    """
+    if setting == MERGE_OFF:
+        return False
+    if setting == MERGE_ON:
+        return True
+    return not quantized
+
+
 def load(
     base_dir: str,
     adapter_dir: str | None,
@@ -245,18 +308,18 @@ def load(
     attn_implementation: str,
     device: str = devices.AUTO,
     progress: NodeProgress | None = None,
-    trust_remote_code: bool = False,
+    merge_lora: str = MERGE_AUTO,
 ):
     """Return ``(tokenizer, model)``, reusing the cached pair when unchanged."""
     device = devices.validate(device)
 
-    remote_code = _needs_remote_code(base_dir)
-    if remote_code and not trust_remote_code:
+    if _needs_remote_code(base_dir):
         raise RuntimeError(
             f"'{base_dir}' carries its own model code (its config.json has 'auto_map'), and "
-            f"loading it runs that code on this machine with your user's rights.\n\n"
-            f"If this is a model you chose and trust, turn 'trust_remote_code' on in the "
-            f"options node. Leave it off for anything a workflow picked for you."
+            f"loading it would run that code on this machine with your user's rights. This "
+            f"pack does not run code that comes with a model.\n\n"
+            f"Pick a model whose architecture Transformers supports itself, as every "
+            f"'transformers' entry the pack ships is, or a GGUF model."
         )
 
     key = (
@@ -265,7 +328,7 @@ def load(
         quantization,
         attn_implementation,
         device,
-        remote_code,
+        merge_lora if adapter_dir else "",
     )
 
     with _LOCK:
@@ -281,7 +344,7 @@ def load(
             progress.set_total(1000)
             progress.ratio(0.0, "Loading tokenizer")
 
-        tokenizer = AutoTokenizer.from_pretrained(base_dir, trust_remote_code=remote_code)
+        tokenizer = AutoTokenizer.from_pretrained(base_dir, trust_remote_code=False)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
 
@@ -302,9 +365,8 @@ def load(
             "dtype": dtype,
             "device_map": devices.device_map(device),
             "attn_implementation": attn_implementation,
+            "trust_remote_code": False,
         }
-        if remote_code:
-            model_kwargs["trust_remote_code"] = True
         if quant_config is not None:
             model_kwargs["quantization_config"] = quant_config
 
@@ -338,10 +400,28 @@ def load(
 
             model = PeftModel.from_pretrained(model, adapter_dir, is_trainable=False)
 
+            if _merges(merge_lora, bool(quant_config) or bool(prequantized)):
+                if progress is not None:
+                    progress.ratio(0.96, "Merging the LoRA into the base weights")
+                started = time.perf_counter()
+                try:
+                    model = model.merge_and_unload()
+                except Exception as error:
+                    log.warning(
+                        "[minimax_h3_rewriter.load] merge_lora='%s' could not merge (%s), "
+                        "running with the adapter attached", merge_lora, error,
+                    )
+                else:
+                    log.info(
+                        "[minimax_h3_rewriter.load] LoRA merged into the base weights in %.2f s",
+                        time.perf_counter() - started,
+                    )
+
         model.eval()
         _STATE.update(
             key=key, tokenizer=tokenizer, model=model,
-            processor=_load_processor(base_dir, remote_code),
+            processor=_load_processor(base_dir),
+            name=os.path.basename(os.path.normpath(base_dir)),
         )
 
         if progress is not None:
@@ -354,8 +434,13 @@ def unload() -> None:
         if _STATE["model"] is None and _STATE["tokenizer"] is None:
             _STATE["key"] = None
             return
-        _STATE.update(key=None, tokenizer=None, model=None, processor=None)
+        _STATE.update(key=None, tokenizer=None, model=None, processor=None, name="")
     _empty_cache()
+
+
+def holding() -> str:
+    """The folder name of the checkpoint that is loaded, or the empty string."""
+    return _STATE["name"] if _STATE["model"] is not None else ""
 
 
 def processor():
@@ -393,6 +478,22 @@ def _render_prompt(tokenizer, messages: list[dict[str, str]]) -> str:
     return _apply_template(tokenizer, messages)
 
 
+def _as_parts(messages: list[dict]) -> list[dict]:
+    """The messages with every plain-string content turned into one text part.
+
+    Typed parts are the shape processors are written for; a bare string only
+    happens to work in most of them. Transformers 4.57's Omni processor reads
+    ``content[0]["text"]`` off the system turn before rendering anything, and a
+    string there is a TypeError (issue #20). The templates of all three bases
+    render one text part exactly as they render the string.
+    """
+    return [
+        {**message, "content": [{"type": "text", "text": message["content"]}]}
+        if isinstance(message.get("content"), str) else message
+        for message in messages
+    ]
+
+
 def _interrupt_criteria():
     from transformers import StoppingCriteria
 
@@ -411,6 +512,61 @@ def _interrupt_criteria():
     return Interrupted()
 
 
+LOOP_PERIODS = (1, 2, 3, 4, 6, 8, 12, 16, 24, 32)
+LOOP_REPEATS = 6
+LOOP_AFTER = 96
+LOOP_EVERY = 16
+
+
+def _loop_criteria(written_from: int):
+    """Stop a generation that has started cycling instead of writing.
+
+    Counted in tokens rather than in text, which is not a preference: the
+    streamer hands the consumer loop only what is up to the last space
+    (``TextStreamer.put`` cuts at ``rfind(' ') + 1``), so a run of "000000..."
+    with no space in it arrives as nothing at all. A text-level watch would be
+    blind to exactly the worst case; the ids are always there.
+
+    Trips on six exact repeats of a block of up to 32 tokens, checked every
+    sixteenth step and never before 96 tokens are written. The window is taken
+    from the answer alone -- a period is skipped once it would reach back into
+    the prompt -- so nothing the guide repeats can start the count.
+
+    Stopping is all it does. The truncated answer goes back to the caller like
+    any other, the self-check names the loop, and what to do about it stays
+    with the person.
+    """
+    from transformers import StoppingCriteria
+
+    torch = _torch()
+
+    class Looping(StoppingCriteria):
+        def __init__(self):
+            self.fired = False
+
+        def __call__(self, input_ids, scores, **kwargs):
+            written = int(input_ids.shape[1]) - written_from
+            if not self.fired and written >= LOOP_AFTER and written % LOOP_EVERY == 0:
+                row = input_ids[0]
+                for period in LOOP_PERIODS:
+                    need = period * LOOP_REPEATS
+                    if need > written:
+                        break
+                    block = row[-need:].reshape(LOOP_REPEATS, period)
+                    if bool((block == block[0]).all()):
+                        self.fired = True
+                        log.info(
+                            "[minimax_h3_rewriter.generate] stopping at a %d-token "
+                            "repetition after %d tokens", period, written,
+                        )
+                        break
+            return torch.full(
+                (input_ids.shape[0],), self.fired, dtype=torch.bool, device=input_ids.device
+            )
+
+    return Looping()
+
+
 def _was_interrupted() -> bool:
     try:
         import comfy.model_management as mm
@@ -426,6 +582,44 @@ def _to_device(inputs, model):
     if hasattr(inputs, "to"):
         return inputs.to(device)
     return {name: tensor.to(device) for name, tensor in inputs.items()}
+
+
+@contextmanager
+def _full_precision_attention():
+    """Generate with attention reduced in fp32, whatever the host process set.
+
+    ComfyUI turns ``allow_fp16_bf16_reduction_math_sdp`` on for every process it
+    starts. It is a fair trade for a diffusion model -- the shorter accumulator
+    is faster and the picture does not notice -- but this is a 7B language model
+    writing a thousand tokens of structured text, and it does notice: on a card
+    where the flash and memory-efficient kernels decline the shape and torch
+    falls back to the math one, the same prompt that writes a full three-field
+    answer with the reduction off dies after four tokens with it on. Greedy
+    decoding has no way back from a first token chosen wrong, which is why the
+    damage is a wrecked answer rather than a slightly worse one.
+
+    Whether a machine sees it at all therefore depends on which attention kernel
+    its GPU gets -- the same build is clean where flash or cuDNN answers, and
+    that is why the reports disagree about which quantization is at fault. It is
+    not the quantization: nf4, int8 and bfloat16 all break, and all three write
+    the same answer once the reduction is off.
+
+    The switch is process-wide, so it goes back exactly as it was found. What
+    ComfyUI does with its own models stays ComfyUI's business.
+    """
+    torch = _torch()
+    backend = torch.backends.cuda
+    try:
+        allowed = backend.fp16_bf16_reduction_math_sdp_allowed()
+    except AttributeError:
+        yield
+        return
+
+    backend.allow_fp16_bf16_reduction_math_sdp(False)
+    try:
+        yield
+    finally:
+        backend.allow_fp16_bf16_reduction_math_sdp(allowed)
 
 
 def _run(
@@ -465,11 +659,12 @@ def _run(
         generation_kwargs.update(temperature=temperature, top_p=top_p, top_k=top_k)
 
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    looping = _loop_criteria(int(inputs["input_ids"].shape[1]))
     call_kwargs = {
         **inputs,
         **generation_kwargs,
         "streamer": streamer,
-        "stopping_criteria": StoppingCriteriaList([_interrupt_criteria()]),
+        "stopping_criteria": StoppingCriteriaList([_interrupt_criteria(), looping]),
     }
 
     failure: list[BaseException] = []
@@ -490,20 +685,22 @@ def _run(
         progress.update(0, "Generating\n0 tokens")
 
     thread = threading.Thread(target=worker, name="minimax-h3-rewriter", daemon=True)
-    thread.start()
 
     pieces: list[str] = []
     produced = 0
-    for piece in streamer:
-        if not piece:
-            continue
-        pieces.append(piece)
-        produced += 1
-        if progress is not None:
-            tail = "".join(pieces)[-PREVIEW_TAIL:]
-            progress.update(produced, f"Generating · {produced}/{max_new_tokens} tokens\n{tail}")
+    with _full_precision_attention():
+        thread.start()
 
-    thread.join()
+        for piece in streamer:
+            if not piece:
+                continue
+            pieces.append(piece)
+            produced += 1
+            if progress is not None:
+                tail = "".join(pieces)[-PREVIEW_TAIL:]
+                progress.update(produced, f"Generating · {produced}/{max_new_tokens} tokens\n{tail}")
+
+        thread.join()
     if failure:
         raise failure[0]
     if _was_interrupted():
@@ -512,7 +709,10 @@ def _run(
         raise mm.InterruptProcessingException()
 
     if progress is not None:
-        progress.finish(f"Done · {produced} tokens")
+        if looping.fired:
+            progress.finish(f"Stopped at a repetition · {produced} tokens")
+        else:
+            progress.finish(f"Done · {produced} tokens")
     return "".join(pieces).strip()
 
 
@@ -565,7 +765,7 @@ def generate_with_images(
 
     set_seed(normalize_seed(seed))
     try:
-        rendered = _apply_template(processor, messages)
+        rendered = _apply_template(processor, _as_parts(messages))
     except ValueError:
         rendered = _apply_template(processor.tokenizer, messages)
     inputs = processor(text=[rendered], images=list(images), return_tensors="pt")
@@ -583,33 +783,36 @@ def rewrite(
     keep_loaded: bool,
     device: str = devices.AUTO,
     progress: NodeProgress | None = None,
-    trust_remote_code: bool = False,
+    merge_lora: str = MERGE_AUTO,
     images: list | None = None,
     **generation,
 ) -> str:
     """Load (or reuse) the rewriter, generate once, and optionally release VRAM.
 
     The model reference never escapes this frame, so ``unload`` can actually
-    drop the last reference and free the device memory.
+    drop the last reference and free the device memory. The whole of it runs
+    under ``resident.in_use``, which is what keeps an unload asked for from
+    another thread from landing in the middle.
     """
-    tokenizer, model = load(
-        base_dir, adapter_dir, quantization, attn_implementation, device, progress,
-        trust_remote_code=trust_remote_code,
-    )
-    try:
-        if images:
-            reader = processor()
-            if reader is None:
-                raise RuntimeError(
-                    f"'{base_dir}' has no processor, so it cannot be shown a picture. This is a "
-                    f"text-only checkpoint -- pick the full multimodal build, or a task that "
-                    f"needs no reference frame."
+    with resident.in_use():
+        tokenizer, model = load(
+            base_dir, adapter_dir, quantization, attn_implementation, device, progress,
+            merge_lora=merge_lora,
+        )
+        try:
+            if images:
+                reader = processor()
+                if reader is None:
+                    raise RuntimeError(
+                        f"'{base_dir}' has no processor, so it cannot be shown a picture. This "
+                        f"is a text-only checkpoint -- pick the full multimodal build, or a "
+                        f"task that needs no reference frame."
+                    )
+                return generate_with_images(
+                    reader, model, images=list(images), progress=progress, **generation
                 )
-            return generate_with_images(
-                reader, model, images=list(images), progress=progress, **generation
-            )
-        return generate(tokenizer, model, progress=progress, **generation)
-    finally:
-        del tokenizer, model
-        if not keep_loaded:
-            unload()
+            return generate(tokenizer, model, progress=progress, **generation)
+        finally:
+            del tokenizer, model
+            if not keep_loaded:
+                unload()

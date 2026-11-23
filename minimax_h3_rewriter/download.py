@@ -26,10 +26,12 @@ import logging
 import os
 import re
 import shutil
+import ssl
 import time
 from dataclasses import dataclass
 
 import requests
+from requests.adapters import HTTPAdapter
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +71,70 @@ class FileTask:
 
 def endpoint() -> str:
     return (os.environ.get("HF_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/")
+
+
+class _SystemTrust(HTTPAdapter):
+    """Verify against what the operating system trusts, as well as certifi.
+
+    ``requests`` checks a certificate against certifi's bundle and nothing else.
+    An antivirus that inspects HTTPS re-signs the site's certificate --
+    huggingface.co's and its CDN's alike -- with a root of its own and installs
+    that root in the Windows store, so the browser accepts it. Python never
+    looked there: every download stopped at "self-signed certificate in
+    certificate chain" on a machine where the browser fetched the same file
+    without a word.
+
+    ``create_default_context`` loads the system store -- Windows' ROOT and CA
+    stores, OpenSSL's default paths elsewhere -- and ``requests`` still adds
+    certifi to it on every connection, so nothing that verified before stops
+    verifying. Verification stays on. This widens whom it trusts to what the
+    machine already trusts, which is what the browser does.
+    """
+
+    _context: ssl.SSLContext | None = None
+
+    @classmethod
+    def context(cls) -> ssl.SSLContext:
+        if cls._context is None:
+            cls._context = ssl.create_default_context()
+        return cls._context
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs.setdefault("ssl_context", self.context())
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, proxy, **proxy_kwargs):
+        proxy_kwargs.setdefault("ssl_context", self.context())
+        return super().proxy_manager_for(proxy, **proxy_kwargs)
+
+
+def http(method: str, url: str, **kwargs) -> requests.Response:
+    """``requests.request`` through ``_SystemTrust``; everything else as it was.
+
+    A session per call, the way ``requests.get`` itself works: nothing shared
+    between threads, and a streamed response keeps its connection when the
+    session closes, because a connection in use is not in the pool it clears.
+    """
+    with requests.Session() as session:
+        session.mount("https://", _SystemTrust())
+        return session.request(method, url, **kwargs)
+
+
+UNTRUSTED_HINT = (
+    "The certificate presented for this site is trusted neither by this machine nor by "
+    "certifi. Something between here and the site is inspecting HTTPS -- an antivirus "
+    "scanning encrypted connections, or a company proxy -- with a root certificate that is "
+    "not in the system store. Add the site to its exclusions, or install its root "
+    "certificate into the system store."
+)
+
+
+def unreachable(where: str, error: Exception) -> str:
+    """What to say when a request fails before any answer, with a hint for TLS."""
+    message = f"Could not reach {where}: {error}"
+    if isinstance(error, requests.exceptions.SSLError):
+        message += f"\n\n{UNTRUSTED_HINT}"
+    return message
 
 
 def access_token() -> str | None:
@@ -154,9 +220,9 @@ def _pause(attempt: int) -> float:
 def list_repo_files(repo_id: str, revision: str = "main", token: str | None = None) -> list[RepoFile]:
     url = f"{endpoint()}/api/models/{repo_id}/tree/{revision}?recursive=1"
     try:
-        response = requests.get(url, headers=_headers(token), timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
+        response = http("GET", url, headers=_headers(token), timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
     except requests.RequestException as error:
-        raise DownloadError(f"Could not reach {endpoint()}: {error}") from error
+        raise DownloadError(unreachable(endpoint(), error)) from error
 
     if response.status_code >= 400:
         raise DownloadError(_explain(response.status_code, f"'{repo_id}' ({revision})"))
@@ -249,13 +315,16 @@ def _stream_to_part(task: FileTask, token: str | None, base: int, on_progress) -
         headers["Range"] = f"bytes={offset}-"
 
     try:
-        response = requests.get(
+        response = http(
+            "GET",
             task.url,
             headers=headers,
             stream=True,
             timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
             allow_redirects=True,
         )
+    except requests.exceptions.SSLError as error:
+        raise DownloadError(unreachable(task.url.split("/resolve/")[0], error)) from error
     except requests.RequestException as error:
         raise _Retryable(str(error)) from error
 
@@ -363,6 +432,10 @@ def sync_repo(
         transferred = base + download_task(task, token, base, on_progress)
 
     on_progress(total, "")
+    log.info(
+        "[minimax_h3_rewriter.download] %s: %d of %d files fetched into %s",
+        repo_id, len(pending), len(tasks), dest_dir,
+    )
     return {
         "repo_id": repo_id,
         "dir": dest_dir,

@@ -1,23 +1,38 @@
-# MiniMax-H3 Prompt Rewriter for ComfyUI
+# MiniMax-H3 Prompt Writers & Rewriters for ComfyUI
 
-ComfyUI nodes for the [LightX2V MiniMax-H3 T2VA Prompt Rewriter LoRA](https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA).
-A short prompt goes in; a structured, production-ready audio-video description
-for [MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) comes out — entirely locally.
+ComfyUI nodes for creating, rewriting and checking structured video-and-audio
+prompts for [MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3). Choose
+LightX2V LoRAs, [full Qwen SFT/GGUF checkpoints](docs/qwen_rewriter.md), local
+models following MiniMax's writing guide, or the [API Universal Writer](docs/api_writer.md)
+with a configured local server or remote provider.
 
-[Русская версия](README_RU.md) · [Changelog](CHANGELOG.md)
+The pack also includes MiniMax-H3-Image and P-H3 prompt expansion, reference conditioning, saved
+RefMods, prompt reduction, presets and prompt/model libraries. Local writers
+run on your machine; API requests go to the provider you configure.
+
+[Русская версия](README_RU.md) · [中文版](README_ZH.md) · [Changelog](CHANGELOG.md)
 
 <p align="center">
   <a href="https://github.com/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI?display_name=tag"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/pytraveler/MiniMax-H3-Prompt-Rewriter-ComfyUI"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
   <a href="https://registry.comfy.org/publishers/darkil/nodes/minimax-h3-prompt-rewriter"><img alt="ComfyUI Registry" src="https://img.shields.io/badge/ComfyUI-Registry-1B98E0"></a>
-  <a href="https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA"><img alt="Hugging Face" src="https://img.shields.io/badge/Hugging%20Face-LoRA-FFD21E?logo=huggingface&logoColor=black"></a>
-  <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-GGUF"><img alt="GGUF adapter, 27B" src="https://img.shields.io/badge/GGUF-27B-FFD21E?logo=huggingface&logoColor=black"></a>
-  <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-8B-GGUF"><img alt="GGUF adapter, 8B" src="https://img.shields.io/badge/GGUF-8B-FFD21E?logo=huggingface&logoColor=black"></a>
-  <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF"><img alt="GGUF adapter, Omni" src="https://img.shields.io/badge/GGUF-Omni-FFD21E?logo=huggingface&logoColor=black"></a>
+  <a href="https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA"><img alt="Hugging Face" src="docs/badges/hf-lora.svg"></a>
+  <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-GGUF"><img alt="GGUF adapter, 27B" src="docs/badges/gguf-27b.svg"></a>
+  <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-8B-GGUF"><img alt="GGUF adapter, 8B" src="docs/badges/gguf-8b.svg"></a>
+  <a href="https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-Omni-GGUF"><img alt="GGUF adapter, Omni" src="docs/badges/gguf-omni.svg"></a>
+  <a href="https://www.youtube.com/watch?v=h3rZTIRB_G8"><img alt="Video review, in English" src="https://img.shields.io/badge/YouTube-review%20(EN)-FF0000?logo=youtube&logoColor=white"></a>
+  <a href="https://www.youtube.com/watch?v=PZd9fWX15VA"><img alt="Video review, in Russian" src="https://img.shields.io/badge/YouTube-review%20(RU)-FF0000?logo=youtube&logoColor=white"></a>
 </p>
 
-![The rewriter node in ComfyUI: a short prompt on the left, the structured shot-by-shot description, soundscape and music fields on the right](docs/node_preview.png)
+<p align="center">
+  <a href="https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-Qwen3.5-9B-Ref2VA"><img alt="LightX2V SFT: Qwen3.5 9B Ref2VA" src="docs/badges/hf-sft-9b-ref2va.svg"></a>
+  <a href="https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-Qwen3.5-9B-FL2VA"><img alt="LightX2V SFT: Qwen3.5 9B FL2VA" src="docs/badges/hf-sft-9b-fl2va.svg"></a>
+  <a href="https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-Qwen3.8-27B-Ref2VA"><img alt="LightX2V SFT: Qwen3.8 27B Ref2VA" src="docs/badges/hf-sft-27b-ref2va.svg"></a>
+  <a href="https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-Qwen3.8-27B-FL2VA"><img alt="LightX2V SFT: Qwen3.8 27B FL2VA" src="docs/badges/hf-sft-27b-fl2va.svg"></a>
+</p>
+
+![The rewriter node in ComfyUI between its options node and a text viewer: a short prompt in the node, and on the right the structured shot-by-shot description, soundscape and music fields](docs/node_preview.png)
 
 The prompt may be in any language the base model reads; the rewrite comes back in
 English, which is what MiniMax-H3 expects.
@@ -26,7 +41,7 @@ English, which is what MiniMax-H3 expects.
 "A red fox walks through a snowy forest at dawn."  +  16:9  +  15s
                               │
                               ▼
-              Qwen3.6-27B + Prompt Rewriter LoRA
+              Prompt Writer / Rewriter
                               │
                               ▼
    integrated_multimodal_description: [Shot 1] ... [Shot 2] 0:06 ...
@@ -37,33 +52,85 @@ English, which is what MiniMax-H3 expects.
               MiniMax-H3 video + synchronized audio
 ```
 
-There are three ways to get that output, and the pack ships all of them:
+Choose a node family for your model and references:
 
-| | Rewriter node | Rewriter 8B | Rewriter Omni | Writer nodes |
-|---|---|---|---|---|
-| Where the format comes from | the LoRA — a 27B trained until H3 output came out of it unprompted | a second LoRA, on a model that also sees | a third LoRA, on a model that also hears | MiniMax's own writing guide, in the system prompt |
-| Model | Qwen3.6-27B only | Qwen3-VL-8B-Instruct only | Qwen2.5-Omni-7B only | any instruction-following GGUF |
-| Smallest working setup | ~10 GB download, ~13 GB VRAM | ~6.1 GB download, ~9 GB VRAM | ~6.2 GB download, ~9 GB VRAM | **2.6 GB download, ~5 GB VRAM** |
-| Tasks | T2VA | T2VA, I2VA, FL2VA, L2VA | T2VA, I2VA, FL2VA, L2VA, **Ref2VA** | T2VA, I2VA, FL2VA, L2VA, Ref2VA |
-| Reference frames | described to it in words | **it looks at them** | **it looks at them** | described to it in words |
-| Clips and sound | described to it in words | described to it in words | **it watches and listens** | described to it in words |
-| Quality | the reference | the same trained contract, at a third of the download; wobblier on the alignment line | the only one that hears; six fields on Ref2VA | close, and it runs on hardware the LoRA cannot touch |
+| Node family | Model or service | Reference input | Tasks |
+|---|---|---|---|
+| LoRA Rewriter 27B | Qwen3.6-27B + LightX2V LoRA | Text descriptions | T2VA |
+| LoRA Rewriter 8B | Qwen3-VL-8B-Instruct + LoRA | Reads first/last-frame images directly | T2VA, I2VA, FL2VA, L2VA |
+| LoRA Rewriter Omni | Qwen2.5-Omni-7B + LoRA | Images; video and audio on the GGUF path | T2VA, I2VA, FL2VA, L2VA, Ref2VA |
+| [Qwen Rewriter](docs/qwen_rewriter.md) | Full LightX2V Qwen3.5 9B / Qwen3.8 27B, SFT or GGUF | Reads images and sampled video frames; sound uses text descriptions | FL2VA checkpoint: T2VA, I2VA, FL2VA, L2VA; Ref2VA checkpoint: Ref2VA |
+| Guide-based writers | Local instruction-following GGUF | Media descriptions from captioners | T2VA, I2VA, FL2VA, L2VA, Ref2VA |
+| [API Universal Writer](docs/api_writer.md) | Configured local server or remote provider | Images, sampled video and audio according to model/server capabilities; descriptions mode is also available | T2VA, I2VA, FL2VA, L2VA, Ref2VA |
 
-The first three columns are also available as one node — [Universal Rewriter](#minimax-h3-universal-rewriter) — where a tab swaps the adapter and everything else stays where it is.
+The three LoRA variants are also available in [Universal Rewriter](#minimax-h3-universal-rewriter),
+where a tab chooses the adapter. For guide-based writers,
+[Reference Caption](#minimax-h3-reference-caption) and
+[Multi Reference Caption](#minimax-h3-multi-reference-caption) turn media into text.
+[Universal Writer](#minimax-h3-universal-writer) combines captioning and prompt
+writing in one node, with draggable chips controlling the reference order.
 
-Two of the four read text only. [Reference Caption](#minimax-h3-reference-caption)
-turns an image, an audio clip or a video into the text they need — 3 to 5 seconds
-per asset on a 3.4 GB model. When a whole shot's worth of references is waiting,
-[Multi Reference Caption](#minimax-h3-multi-reference-caption) does all of them at
-once — or [Universal Writer](#minimax-h3-universal-writer) describes them and writes
-the prompt in the same node, with their order a widget you can drag rather than a
-consequence of which slot you happened to use, and
-[Reference Writer (Ref2VA)](#minimax-h3-reference-writer-ref2va) does the same pair
-of jobs for Ref2VA alone. The 8B rewriter needs none of that
-for its reference *frames*: connect the picture and it reads it. The Omni rewriter
-needs none of it at all — a clip and a sound reach it as themselves.
+And when the shortest way to a good prompt is somebody else's:
+[Prompt Presets](#minimax-h3-prompt-presets) hands over one of a thousand
+finished MiniMax-H3 prompts that ship inside the pack, narrowed by look and
+subject, each with the frame of the clip it was written for and that clip a click
+away. No model is loaded for it and nothing is downloaded.
 
 If your card has 8 GB, skip to [the writer nodes](#minimax-h3-prompt-writer-t2vai2vafl2val2va).
+
+## Contents
+
+- [What you need before installing](#what-you-need-before-installing)
+- [Install](#install)
+  - [Example workflows](#example-workflows)
+- [Nodes](#nodes)
+  - [MiniMax-H3 Prompt Rewriter](#minimax-h3-prompt-rewriter)
+  - [MiniMax-H3 Prompt Rewriter 8B (sees frames)](#minimax-h3-prompt-rewriter-8b-sees-frames)
+  - [MiniMax-H3 Prompt Rewriter Omni (sees and hears)](#minimax-h3-prompt-rewriter-omni-sees-and-hears)
+  - [MiniMax-H3 Qwen Rewriter](#minimax-h3-qwen-rewriter)
+  - [MiniMax-H3 Universal Rewriter](#minimax-h3-universal-rewriter)
+  - [MiniMax-H3 Rewriter Options](#minimax-h3-rewriter-options)
+  - [MiniMax-H3 Prompt Writer (T2VA/I2VA/FL2VA/L2VA)](#minimax-h3-prompt-writer-t2vai2vafl2val2va)
+  - [MiniMax-H3 Prompt Writer (Ref2VA)](#minimax-h3-prompt-writer-ref2va)
+  - [MiniMax-H3 Universal Writer](#minimax-h3-universal-writer)
+  - [MiniMax-H3 Image Prompt Writer](#minimax-h3-image-prompt-writer)
+  - [P-H3 Prompt Writer (images)](#p-h3-prompt-writer-images)
+  - [MiniMax-H3 Reference Caption](#minimax-h3-reference-caption)
+  - [MiniMax-H3 Multi Reference Caption](#minimax-h3-multi-reference-caption)
+  - [Captioning with a model ComfyUI already has loaded](#captioning-with-a-model-comfyui-already-has-loaded)
+  - [The captioner is loaded once, not once per reference](#the-captioner-is-loaded-once-not-once-per-reference)
+  - [MiniMax-H3 Guide Prompt (any LLM)](#minimax-h3-guide-prompt-any-llm)
+  - [MiniMax-H3 Prompt Check](#minimax-h3-prompt-check)
+  - [MiniMax-H3 Prompt Reducer](#minimax-h3-prompt-reducer)
+  - [MiniMax-H3 Reduce Prompt (any LLM)](#minimax-h3-reduce-prompt-any-llm)
+  - [MiniMax-H3 Effect Embeddings](#minimax-h3-effect-embeddings)
+  - [MiniMax-H3 LoRA Triggers](#minimax-h3-lora-triggers)
+  - [MiniMax-H3 Reference Adapter](#minimax-h3-reference-adapter)
+  - [MiniMax-H3 Reference Slots](#minimax-h3-reference-slots)
+  - [MiniMax-H3 RefMod](#minimax-h3-refmod)
+  - [MiniMax-H3 Reference Encode](#minimax-h3-reference-encode)
+  - [MiniMax-H3 Prompt Presets](#minimax-h3-prompt-presets)
+  - [The duration widget](#the-duration-widget)
+  - [Repeating the last answer](#repeating-the-last-answer)
+  - [Unloading a kept model](#unloading-a-kept-model)
+  - [The answer is checked](#the-answer-is-checked)
+  - [Acting on what it found](#acting-on-what-it-found)
+  - [The prompt library](#the-prompt-library)
+  - [The guides are fetched, not bundled](#the-guides-are-fetched-not-bundled)
+  - [The model list](#the-model-list)
+  - [Models you already pulled for Ollama](#models-you-already-pulled-for-ollama)
+- [Where the weights go](#where-the-weights-go)
+- [Using a model you already have](#using-a-model-you-already-have)
+  - [Smaller repackings](#smaller-repackings)
+  - [If the node says a package is missing](#if-the-node-says-a-package-is-missing)
+- [Smallest download without any extra install](#smallest-download-without-any-extra-install)
+- [GGUF — smaller still, and nothing to install](#gguf--smaller-still-and-nothing-to-install)
+  - [Progress on the node](#progress-on-the-node)
+  - [Environment variables](#environment-variables)
+  - [Languages](#languages)
+- [Notes](#notes)
+- [Credits](#credits)
+- [Licence](#licence)
 
 ## What you need before installing
 
@@ -106,6 +173,50 @@ python_embeded\python.exe -m pip install -r ComfyUI\custom_nodes\MiniMax-H3-Prom
 
 Or install it from the Comfy registry through ComfyUI-Manager.
 
+### Example workflows
+
+Twelve workflows ship with the pack and appear in ComfyUI's template browser
+(*Workflow → Browse Templates*) under this node pack's name once it is
+installed. Each is a card of its own and each runs on its own: nothing is
+bypassed on open, and there is no second branch to mute before pressing Run.
+
+| | Template | What it needs |
+|---|---|---|
+| 1 | **Write a prompt** — one line of an idea in, a full H3 audio-video description out | one 2.6 GB GGUF |
+| 2 | **Rewrite a prompt with the 27B LoRA** — the LightX2V adapter this pack is named after | one 15.7 GB GGUF |
+| 3 | **Write a prompt from references** — the writer describes your pictures and writes from what it saw | two GGUFs, 6 GB together |
+| 4 | **Ready-made prompts** — a thousand finished ones, picked in a browser with their frames | nothing at all |
+| 5 | **Prompt to video** — ComfyUI's text-to-video template with the writer in front of it | the MiniMax-H3 weights |
+| 6 | **References to video** — the same for Ref2VA, the pictures reaching the generator through the writer, in the order its strip numbers them | the MiniMax-H3 ref2va weights |
+| 7 | **LoRA triggers and effects** — the words an adapter answers to, and MiniMax's ten effects, put into a finished prompt | nothing at all |
+| 8 | **RefMods to video** — a [RefMod](#minimax-h3-refmod), a look and a voice saved already encoded: the writer sees and hears it, and the generator is given the latent it was saved as | the MiniMax-H3 ref2va weights, and a RefMod in `models/refmods` |
+| 9 | **P-H3 text to image** | P-H3 image weights and prompt upsampler |
+| 10 | **P-H3 image editing** | P-H3 image weights, upsampler and your picture |
+| 11 | **Write through an API** | a configured local or remote API server |
+| 12 | **Write with the full Qwen model** | 9B Q5_K_M and its F16 projector, 7.39 GB together |
+
+5, 6 and 8 generate MiniMax-H3 video; 9 and 10 generate P-H3 images. The other
+workflows produce or process prompts. 5 and 6 are ComfyUI's own gallery templates
+with the generator folded into a single subgraph box, so what is on screen is
+the prompt side plus one node — the checkpoints they name are the ones the
+stock templates use, and ComfyUI offers to download any that are missing. 8 is
+6 with [Reference Encode](#minimax-h3-reference-encode) in that box in place of
+the native reference node, and the two VAEs outside it, shared with the RefMod.
+
+Every one carries a **Read me first** note: what it does, what it downloads,
+what to set before pressing Run, and where to go next. The image loaders in 3
+and 6 and the RefMod picker in 8 ship **empty** on purpose — a file name saved
+into a template points at something your machine does not have — so choose
+your own first.
+
+The card pictures the browser draws beside each name come from
+`python tools/template_cards.py`, which writes them as `<name>.jpg` next to the
+workflow, where the browser looks for them.
+
+For a community take, [axiomgraph's workflows](https://github.com/axiomgraph/ComfyUIWorkflow)
+pair the Omni rewriter with FL2VA (GPL-3.0, and they use a few extra node
+packs — grab them from their repository).
+
 ## Nodes
 
 ### MiniMax-H3 Prompt Rewriter
@@ -127,10 +238,35 @@ releases the VRAM again.
 - `prompt` — the short prompt to expand.
 - `model` — the base model. The list holds every entry from your model list plus
   every Qwen3.6-27B already on disk (prefixed `on disk:`). Anything not present
-  is downloaded on first use, resuming if interrupted. The **Open model list**
-  button edits the list — see below.
+  is downloaded on first use, resuming if interrupted. The **Model list**
+  button edits the list in a window over the graph — see below.
 - `resolution` / `duration` — conditions the rewrite is composed for. Keep them
-  equal to what you pass to MiniMax-H3, or the shot pacing will not match.
+  equal to what you pass to MiniMax-H3, or the shot pacing will not match. The
+  list runs `48:9` down to `9:16`; the two ultrawides are the multi-monitor
+  case — 32:9 is two 16:9 screens side by side, 48:9 three. They condition how
+  the shot is composed, which is all this node decides; what a generator will
+  render at that shape is its own question.
+- `aspect_ratio` — **the same setting, on a socket**, and it wins while something
+  is connected. Every writer and rewriter node in the pack has it, and it takes a
+  `STRING` or a `COMBO` link, so the primitive that already sets ComfyUI's
+  **Resolution Selector** can drive this from the same wire. It is there
+  because the shape of the frame is usually decided elsewhere in the graph and
+  spelled differently there: ComfyUI's own **Resolution Selector** calls 16:9
+  `16:9 (Widescreen)`, a size node says `3840x1080`, a divider says `1.78`. All
+  three are read, and a label around the pair is read through — the number pair
+  is what counts. A frame size within 2% of a listed ratio is called by its
+  name, so `1376x768` (which is what Resolution Selector produces for 16:9 at
+  1 MP) arrives as `16:9` rather than as `43:24`; a ratio that is nothing on the
+  list passes through as itself, which is how `2.39:1` or `5:4` gets in.
+  Something that is not a ratio at all is refused by name rather than composed
+  for. The `resolution` widget itself has no socket, so there is one way in and
+  it is the one that reads what other nodes write. **The picker greys out while
+  the wire is connected** — dimmed, nothing lit, clicks refused — because a lit
+  square would be naming a ratio the run is not going to use. **Unplugging clears
+  the field**: an upstream node writes its value into the widget — that is how a
+  wire feeds a widget input at all — so the text would otherwise stay behind, and
+  it is not inert while it sits there. Anything in `aspect_ratio` outranks the
+  picker, including a leftover.
 - `quantization` — how to load an *unquantized* checkpoint: `nf4` (default,
   ~16 GB VRAM), `int8` (~28 GB), `bfloat16` / `float16` (~54 GB). Ignored when
   the checkpoint brings its own quantization.
@@ -138,7 +274,9 @@ releases the VRAM again.
 - `seed`
 - `keep_model_loaded` — **off by default.** The 27B model is released as soon as
   the rewrite finishes, so the same GPU can run H3 video generation next. Turn it
-  on only when iterating on prompts back-to-back.
+  on only when iterating on prompts back-to-back, and see
+  [Unloading a kept model](#unloading-a-kept-model) for giving the card back
+  afterwards.
 - `options` — optional; connect a **MiniMax-H3 Rewriter Options** node.
 
 ### MiniMax-H3 Prompt Rewriter 8B (sees frames)
@@ -150,7 +288,7 @@ where the 27B has to be *told* what a reference frame contains, this one is show
 the frame and writes the alignment line from what it sees. It covers four tasks
 rather than one, and fits on a card the 27B cannot go near.
 
-![The 8B rewriter node in ComfyUI, set to T2VA: the options node on the left, the rewriter with its first_frame and last_frame inputs in the middle, and the finished rewrite on the right with numbered shots, (S1) and (S2) speaker ids and a <d>[English] Hello.</d> dialogue tag](docs/node_rewriter_8b.png)
+![The 8B rewriter node in ComfyUI, set to T2VA: the options node on the left, the rewriter with its first_frame and last_frame inputs in the middle, and the finished rewrite on the right with numbered shots, an (S1) speaker id and a <d>[English] Hello.</d> dialogue tag](docs/node_rewriter_8b.png)
 
 **Outputs** are the same four as the rewriter above, so the two are
 interchangeable downstream.
@@ -228,7 +366,7 @@ itself: the picture, the clip, or the sound. It is also the only one of the thre
 that covers **Ref2AV**, the full-reference task, which answers with six fields
 instead of three.
 
-![The Omni rewriter node set to REF2AV: four reference sockets down the left with a checkbox on each row, eight outputs on the right from rewritten_prompt down to non_diegetic_music, and between them a strip of three coloured squares - a blue "pic 1" over ref_0, a blue "pic 2" over ref_1 and a purple "aud 1" over ref_2 - above the line "drag to reorder - that order numbers the labels - click a square to switch it off". Below that the five tasks with REF2AV lit, six aspect-ratio rectangles drawn to proportion with 16:9 chosen, a duration of 10.0, a Russian prompt, and an on-disk Qwen2.5-Omni-7B Q8_0 with its projector. On the right the finished rewrite fills all six Ref2AV fields, naming Subject 1, Subject 2, Picture 1, Picture 2 and Audio 1 across two shots](docs/node_rewriter_omni.png)
+![The Omni rewriter node set to REF2AV, fed by a Load Video and a Load Image node: four reference sockets down the left with a checkbox on each row, nine outputs on the right from rewritten_prompt down to references, and between them a strip of three coloured squares - a blue "pic 1" over ref_0, a purple "aud 1" over ref_1 and a blue "pic 2" over ref_2 - above the line "drag to reorder - that order numbers the labels - click a square to switch it off". Below that the five tasks with REF2AV lit, eight aspect-ratio rectangles drawn to proportion from 48:9 to 9:16 with 16:9 chosen, a duration of 10.0, a two-sentence prompt, a Qwen2.5-Omni-7B GGUF Q8_0 in the model dropdown, and five buttons at the bottom: Model list, Unload model, Save the last prompt, Edit the last prompt and Prompt library. On the right the finished rewrite fills all six Ref2AV fields, naming Subject 1, Subject 2, Picture 1, Picture 2 and Audio 1 across two shots](docs/node_rewriter_omni.png)
 
 **Outputs.** Seven, and which of them fill depends on the task. The four frame
 tasks return the same three as the other two rewriters, so they are
@@ -236,7 +374,10 @@ interchangeable downstream. `Ref2AV` returns six: `subject_definitions`,
 `summary`, `retention_analysis`, `detailed_description`, `overall_soundscape`
 and `non_diegetic_music` — the same set the
 [Ref2VA writer](#minimax-h3-prompt-writer-ref2va) produces, and the same meanings.
-`rewritten_prompt` always carries the whole answer.
+`rewritten_prompt` always carries the whole answer. After them comes
+`references`, which is not text: the switched-on references in strip order, for
+[Reference Slots](#minimax-h3-reference-slots) to hand on to
+`MiniMaxH3ReferenceToVideo` numbered the way the prompt numbers them.
 
 **Inputs**
 
@@ -290,6 +431,16 @@ strip. There, a picture can be told to stand for a subject or a clip, because th
 guide-driven turn names its references by hand. Here the socket settles it — and
 a *subject* is something this adapter **produces** in `subject_definitions`, not
 something the request supplies.
+
+**A clip's label band switches its own sound on.** On `Ref2AV` the band turns
+purple and reads `vid+a1`: the clip's sound is now `<Audio 1>`, a reference of
+its own, and the adapter hears it — handed over as a separate sound right before
+the clip, which is the only way its upstream inference ever passes a clip's
+sound. Clip sounds take the first `<Audio N>` numbers and standalone sounds
+follow, because that is how `MiniMaxH3ReferenceToVideo` numbers them, so a sound
+square ahead of a sounding clip in the strip is presented after it. On the other
+tasks the band stays a paler purple with no number: set, and idle until
+`Ref2AV`. A clip with no sound track is said on the node and left unnumbered.
 
 **What it costs**
 
@@ -346,6 +497,30 @@ references widens it instead of failing.
 path has no way to hand the model a sound, so a clip or a sound on that base is
 refused rather than silently dropped from the turn. Pick a GGUF base to use them.
 
+### MiniMax-H3 Qwen Rewriter
+
+Runs the full LightX2V **Qwen3.5 9B** and **Qwen3.8 27B** SFT checkpoints, or their
+GGUF conversions with matching vision projectors. The FL2VA checkpoint serves
+T2VA, I2VA, L2VA and FL2VA; the Ref2VA checkpoint serves Ref2VA. Pick original
+SFT weights or GGUF through **Model list**, with generation and media settings
+in the separate **Qwen Rewriter Options** node.
+
+The node has the shared top reference strip, input checkboxes, **+ instr**,
+aspect/duration controls, bypass/repeat badges, prompt library and `references`
+output. It reads images and sampled video frames directly; audio uses explicit
+descriptions because these checkpoints have no audio encoder.
+
+| Checkpoint | Original SFT | GGUF Q5_K_M / Q4_K_M |
+|---|---|---|
+| Qwen3.5-9B FL2VA | [LightX2V](https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-Qwen3.5-9B-FL2VA) | [pytraveler](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-Qwen3.5-9B-FL2VA-GGUF) |
+| Qwen3.5-9B Ref2VA | [LightX2V](https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-Qwen3.5-9B-Ref2VA) | [pytraveler](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-Qwen3.5-9B-Ref2VA-GGUF) |
+| Qwen3.8-27B FL2VA | [LightX2V](https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-Qwen3.8-27B-FL2VA) | [pytraveler](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-Qwen3.8-27B-FL2VA-GGUF) |
+| Qwen3.8-27B Ref2VA | [LightX2V](https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-Qwen3.8-27B-Ref2VA) | [pytraveler](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-Qwen3.8-27B-Ref2VA-GGUF) |
+
+[Setup, reference roles, outputs and conversion](docs/qwen_rewriter.md).
+
+![Qwen Rewriter Options, the full Qwen Rewriter and its generated H3 prompt](docs/qwen_rewriter_workflow.png)
+
 ### MiniMax-H3 Universal Rewriter
 
 All three prompt-rewriter LoRAs in one node, with a tab at the top choosing which
@@ -366,19 +541,15 @@ same prompt, the aspect ratio is the same aspect ratio, the duration is the same
 duration — so trying another adapter meant retyping all of it into a second node
 and then keeping them in step.
 
-![The Universal Rewriter on its 27B tab: two tabs across the top with "27B LoRA / text only" lit and "8B LoRA / sees frames" dark, a task strip with T2VA lit and I2VA, FL2VA and L2VA greyed out, six aspect-ratio rectangles drawn to proportion with 16:9 chosen, a duration slider at 8, the prompt, and below them model_27b pointing at an on-disk Qwen3.6-27B GGUF with quantization_27b set to nf4](docs/node_universal_rewriter_27b.png)
+![The Universal Rewriter on its Omni tab, running I2VA: four reference rows down the left — first_frame, last_frame, reference_video and reference_audio, each with a checkbox, and first_frame fed by a Load Image node — and nine outputs on the right, from rewritten_prompt down to references. Three tabs across the top with "Omni LoRA / sees, hears" lit, a task strip with I2VA lit, eight aspect-ratio rectangles drawn to proportion from 48:9 to 9:16 with 16:9 chosen, a duration slider at 10, the prompt "A woman says hello to a alien.", and below them model_omni on a Qwen2.5-Omni-7B GGUF Q8_0 with quantization_omni set to bfloat16, then aspect_ratio, repeat_last and five buttons: Model list, Unload model, Save the last prompt, Edit the last prompt and Prompt library. On the right the answer: a line saying Picture 1 is fully referenced from the first shot, then the three fields I2VA fills](docs/node_universal_rewriter.png)
 
-![The same node one click later, on its 8B tab: "8B LoRA / sees frames" lit and "27B LoRA" dark, all four tasks available with FL2VA chosen, the same 16:9, the same duration of 8 and the same prompt, and below them model_8b pointing at an on-disk Qwen3-VL-8B-Instruct with quantization_8b set to int8](docs/node_universal_rewriter_8b.png)
-
-![The Universal Rewriter on its Omni tab, running Ref2VA: four reference rows down the left - first_frame, last_frame, reference_video and reference_audio, each with a checkbox - and eight outputs on the right, the three every task fills first and the four Ref2VA adds after them. Three tabs across the top with Omni lit, a task strip with Ref2VA lit, 16:9 chosen among the ratio rectangles, a duration slider at 10, the prompt, and below them model_omni pointing at an on-disk Qwen2.5-Omni-7B Q8_0 with quantization_omni set to nf4. On the right the six-field answer, with Audio 1 marked partially_copy in the retention analysis](docs/node_universal_rewriter_omni.png)
-
-*The same node, three clicks apart. Nothing above the model rows moved — the
-ratio, the duration, the prompt are one set of values. Below them each tab is
-holding its own: a 27B GGUF at `nf4` on the first, a Qwen3-VL-8B at `int8` on the
-second, a Qwen2.5-Omni-7B at `nf4` on the third, all still where they were left.
-The task strip is the other difference — the 27B tab lights `T2VA` alone; the 8B
-tab has all four frame tasks, because both frame inputs are connected and
-switched on; and the Omni tab adds `Ref2VA`, which no other tab can reach.*
+*One node, three tabs. Nothing above the model rows belongs to a tab — the
+task, the ratio, the duration and the prompt are one set of values, whichever
+adapter is lit. Below them each tab holds its own model and quantization, still
+set to whatever you last chose, including across a save and load. The task strip
+is the other difference: the 27B tab lights `T2VA` alone, the 8B tab adds the
+three frame tasks, and the Omni tab adds `Ref2VA` on top of them, which no other
+tab can reach.*
 
 **So the tab carries what differs, and nothing else:**
 
@@ -417,7 +588,10 @@ dropped. On `Ref2VA` everything connected becomes a reference the target video
 reuses, in socket order: `first_frame` is `<Picture 1>`, `last_frame` is
 `<Picture 2>`, then `<Video 1>`, then `<Audio 1>`. The answer comes back in six
 fields instead of three; the four extra outputs sit **after** the three every
-task fills, so nothing already wired to this node moves.
+task fills, so nothing already wired to this node moves. Last of all is
+`references`: the references the current tab actually read, for
+[Reference Slots](#minimax-h3-reference-slots) to hand on to
+`MiniMaxH3ReferenceToVideo`.
 
 > **Four references, not twelve.** Order is the whole labelling rule, and with
 > four sockets the order is the order of the sockets. Past that, arranging them
@@ -434,16 +608,23 @@ Run the 27B tab with any of them connected and the node says on itself that it i
 not reading them, and where to put them instead, rather than leaving you to
 wonder.
 
-**`duration` is a slider, and its range is 4–15 seconds.** Not a property you can
-raise, unlike the Universal Writer's: that node writes from a prose guide, while
-these two are LoRAs, and 4–15 is the range they were trained on. A number outside
-it is a worse prompt rather than a longer video — MiniMax-H3 gets the length from
-its own settings, not from this line.
+**`reference_video` has a second box, a speaker.** Tick it and the clip's own
+sound becomes a reference of its own on the Omni tab's `Ref2VA`: `<Audio 1>`,
+with `reference_audio` moving to `<Audio 2>` — the order
+`MiniMaxH3ReferenceToVideo` gives them — and `references` carries it on to
+[Reference Slots](#minimax-h3-reference-slots).
+
+**`duration` is a slider**, reaching 30 seconds until you move it — right-click
+the node, `duration`. See [The duration widget](#the-duration-widget). The three
+adapters were trained on clips of a few seconds, so a number far past that is a
+worse prompt rather than a longer video — MiniMax-H3 gets the length from its own
+settings, not from this line.
 
 **There is no "Open guide folder" button**, because none of the three adapters
 reads a guide: the format is in the system prompt they were trained with. The
-model list button is there, and it opens the same `models.json` — `models` for
-the 27B tab, `models_8b` for the 8B one, `models_omni` for the Omni one.
+**Model list** button is there, and it opens all three of this node's lists as
+tabs in one window — `models` for the 27B tab, `models_8b` for the 8B one,
+`models_omni` for the Omni one.
 
 > **If the interface script does not load**, the tab strip, the task switch and
 > the ratio picker fall back to the plain dropdowns they are built on, and every
@@ -462,7 +643,7 @@ the 27B tab, `models_8b` for the 8B one, `models_omni` for the Omni one.
 Everything you rarely touch, kept off the main node. Leave it unconnected and the
 rewriter uses the decoding parameters the adapter was published with.
 
-![The Rewriter Options node, one output socket and fifteen widgets: max_new_tokens, temperature, top_p, top_k, repetition_penalty, attn_implementation, the adapter to apply, use_lora, auto_download, gpu_layers, n_ctx, gguf_runtime, device, llama_backend and trust_remote_code](docs/node_options.png)
+![Rewriter Options with Default guide and the System prompts button below the generation settings](docs/node_options.png)
 
 | Input | Default | Purpose |
 |---|---|---|
@@ -472,12 +653,56 @@ rewriter uses the decoding parameters the adapter was published with.
 | `attn_implementation` | `sdpa` | `eager` or `flash_attention_2` if you have it |
 | `adapter` | the LightX2V repo | Which build of the LoRA to apply — see below |
 | `use_lora` | on | Turn off for the plain base-model baseline |
+| `merge_lora` | `auto` | Fold the adapter into the weights at load — twice the tokens a second, see below |
 | `auto_download` | on | Turn off to fail loudly instead of fetching 52 GB |
+| `downloader` | `built-in` | Which code fetches a Hugging Face repository — see below |
 | `device` | `auto` | Which GPU runs the language model — see below |
-| `trust_remote_code` | **off** | Allow a checkpoint to run the Python it ships with — see below |
+| `prompt_file` | `global` | Which set of saved prompts the nodes wired to this one work in — see [the prompt library](#the-prompt-library) |
+| `self_check` | `warnings and notes` | How much of [the self-check](#the-answer-is-checked) is said out loud: everything, warnings only, or nothing |
+| `fix_once` | `false` | Let the nodes act on what the check found — [one re-run, never a loop](#acting-on-what-it-found) |
+| `captioner_thinking` | `off` | GGUF reference captions: `off` disables thinking, `auto` keeps the model template default, `on` enables it when supported. |
+
+For GGUF captions, supported flags are read from each binary's `--help` once
+per executable revision. Explicit `off`/`on` uses `--reasoning` and, when
+available, `--jinja`. If `llama-mtmd-cli` cannot set thinking, a compatible
+`llama-server` beside it is used even for a single reference. The server loads
+once per strip and exits when the run completes or is cancelled.
+`MINIMAX_H3_MTMD_SERVER=never` keeps the CLI route. If neither available route
+can apply the setting, the run uses the template default and logs a warning;
+it never sends an unsupported flag. The 1024-token caption cap remains in
+place. An empty GGUF caption raises an error. This option does not change the
+writer or CLIP caption settings.
 
 The same options node feeds the writer nodes and the captioner; `adapter` and
 `use_lora` simply do not apply there.
+
+#### `merge_lora` — the adapter as weights rather than as a second matmul
+
+PEFT keeps an attached LoRA beside the base model and computes it on every
+token, on top of the base weights. Folding it in once at load does the same
+arithmetic ahead of time, and the difference is not small. Measured here on
+Qwen3-VL-8B with the 8B adapter, 128 tokens on a 5090:
+
+| | adapter attached | folded in | merge costs |
+|---|---|---|---|
+| `bfloat16` | 8.98 s — 14.3 tokens/s | **5.13 s — 25.0 tokens/s** | 0.07 s |
+| `nf4` | 9.43 s — 13.6 tokens/s | **5.09 s — 25.1 tokens/s** | 4.6 s |
+
+`auto`, the default, takes the free half: it folds the adapter into an
+unquantized base, where the merge costs a tenth of a second, and leaves it
+attached on a bitsandbytes `nf4`/`int8` one, where merging means dequantizing
+every layer and quantizing it back. `on` does it there too, if you would rather
+pay 4.6 s at load and have the tokens; `off` is the old behaviour. Nothing here
+touches the GGUF route, where llama.cpp applies the adapter its own way.
+
+**A folded run is not word-for-word the attached one.** Merging reassociates the
+arithmetic — `W + BA` computed once is not bit-for-bit `Wx + B(Ax)` computed per
+token — so a token here and there falls differently and the rest of the sentence
+follows it. Measured on the pair above at the same seed: two differences in 128
+tokens on `bfloat16`, more on `nf4`, where the requantization adds error of its
+own and PEFT prints a warning saying so. Neither answer is the better one, but
+they are not the same answer, and a workflow you have tuned to the token is a
+reason to leave this on `off`.
 
 #### `adapter` — a dropdown, and what is in it
 
@@ -513,20 +738,21 @@ downloaded workflow gets any say in:
   LoRA is otherwise invisible: the node still runs and still fills every field,
   it just writes something else.
 
-#### `trust_remote_code` — off, and why
+#### Model code is never run
 
 A Transformers checkpoint can carry its own modelling code, named by `auto_map`
 in its `config.json`, and loading such a model imports and runs that Python with
-your user's rights. Nothing in the shipped list does this: every `transformers`
-entry is a Qwen3.6-27B variant, an architecture Transformers supports natively,
-and the GGUF entries never reach Transformers at all. So this switch is off, and
-for the models this node offers it changes nothing.
+your user's rights. The node refuses such a model and says why. Nothing in the
+shipped list is one: every `transformers` entry is a Qwen3.6-27B variant,
+Qwen3-VL-8B or Qwen2.5-Omni-7B, architectures Transformers supports natively,
+and the GGUF entries never reach Transformers at all.
 
-It exists for the case where it does matter — a model you added to `models.json`
-yourself, with an architecture Transformers does not know. Then the node stops
-and says so instead of running the code, and turning the switch on is you saying
-which model you trust. The decision is yours to make and not `config.json`'s to
-make for you, which is the whole point of it being a widget.
+Up to 0.30.0 a `trust_remote_code` switch here let such a model run. It was off
+by default, but it was a widget, so a workflow could turn it on, and the model
+list can be extended through ComfyUI's API, which asks for no login. On a
+ComfyUI reachable from the network that was enough to make it download a model
+and run the code inside. 0.31.0 removed the switch. A workflow saved with it
+still loads: the Options node puts the other values back in place.
 
 #### `device` — and why it changes `keep_model_loaded`
 
@@ -561,6 +787,56 @@ The values are deliberately plain rather than `cuda:1 · RTX 4090`: a label with
 the card's name reads better and breaks every saved workflow the day the card is
 replaced. The tooltip names what is in each slot.
 
+#### `downloader` — the built-in transfer, or `huggingface_hub`
+
+The default moves the bytes itself: one ranged HTTP connection at a time,
+resumable, needing nothing installed. That is the right floor for something
+nobody opted into, and on a fast link it is fine.
+
+It is not fine on a 30 GB checkpoint over a connection that gives one stream 8
+MB/s. The Comfy-Org repositories are **Xet-backed**, and `hf_xet` fetches the
+chunks of a *single* file over many connections at once — which is the whole of
+the difference behind "the CLI took five minutes and the node took an hour".
+Setting `downloader` to `huggingface_hub` takes that route instead:
+
+```
+python -m pip install huggingface_hub hf_xet
+```
+
+into ComfyUI's own Python, then restart. Neither package is a dependency of this
+pack, and **nothing fails if they are missing**: the node logs the install line,
+notes it in the caption, and downloads with the built-in transfer. That matters
+because the setting travels inside the workflow, and a graph authored on a
+machine that has them should still run on one that does not.
+
+**It covers Hugging Face repositories only** — base models, GGUF writers, LoRA
+adapters, a model and its projector. The llama.cpp binaries come from GitHub
+releases and the two writing guides are one small request each; neither goes
+through this setting.
+
+**Half-finished files are not interchangeable.** The built-in transfer parks
+bytes in `<name>.part` beside the file; `huggingface_hub` parks them under
+`.cache/huggingface` inside the destination folder. Switching in the middle of a
+download restarts that one file and leaves the other's leftovers to delete by
+hand. A file that is already complete is never fetched twice either way — this
+pack decides what is missing before either backend is called, which also avoids
+`huggingface_hub` re-hashing a finished 30 GB file to adopt it.
+
+One thing worth knowing about disk: `hf_xet` keeps a chunk cache at
+`~/.cache/huggingface/xet` (`HF_XET_CACHE`), which on Windows is on `C:` whatever
+drive the models live on. The free-space check this pack runs before a download
+only looks at the destination.
+
+**Behind an antivirus that inspects HTTPS.** Antiviruses that scan encrypted
+connections, and company proxies like them, re-sign huggingface.co with a root
+certificate of their own and install that root in the system's certificate store,
+which is why the browser still opens the site. The built-in transfer trusts that
+store as well as the usual certifi bundle, so it downloads wherever the browser
+does. `huggingface_hub` and `hf_xet` bring their own TLS and do not look there:
+behind such a filter they stop at `certificate verify failed`, and the node says
+so — switch back to the built-in transfer, or add huggingface.co to the filter's
+exclusions.
+
 ### MiniMax-H3 Prompt Writer (T2VA/I2VA/FL2VA/L2VA)
 
 The same three output fields, without the LoRA and without the 27B. MiniMax's own
@@ -569,7 +845,7 @@ goes into the system prompt and any instruction-following GGUF writes to it. A
 5.2 GB Qwen3.5-9B fills all three fields, with correct camera vocabulary, speaker
 IDs and `<d>[English] …</d>` dialogue, in about 20 seconds.
 
-![The T2VA writer node beside a text viewer: a four-line prompt on the left, and on the right the shot-by-shot description with its two numbered shots, the soundscape paragraph, and non_diegetic_music reading N/A](docs/node_t2va.png)
+![The T2VA writer node between its options node and a text viewer: a one-line prompt, a model served by Ollama, and on the right the shot-by-shot description with its three numbered shots, the soundscape paragraph, and non_diegetic_music describing a sparse piano and a low cello](docs/node_t2va.png)
 
 *T2VA, 10 seconds at 16:9, on a local Qwen3.6-27B — 11.2 s. The prompt went in
 in Russian and the description came back in H3's English format, with the cut at
@@ -623,8 +899,7 @@ which fields are absent, on the node. Lower the temperature or move up a size.
 The guide is the whole of what makes this an H3 writer: it goes into the system
 prompt and nothing else in the node knows the format. So replacing that text is
 what turns these nodes into a writer for something else — LTX, Krea, Wan, or a
-house style of your own. Write it into `system_prompt` and the assembled guide is
-not used; on an empty field nothing changes.
+house style of your own. Text in `system_prompt` replaces the assembled guide.
 
 The guide is then not even fetched, which matters on a machine kept offline:
 there is no 24 KB document downloaded to be ignored.
@@ -632,6 +907,19 @@ there is no 24 KB document downloaded to be ignored.
 The shortest way in is
 [Guide Prompt (any LLM)](#minimax-h3-guide-prompt-any-llm), which hands you the
 stock system prompt on an output. Take it, edit it, connect it back.
+
+**Saved system prompts.** Open **System prompts...** on Rewriter Options,
+API Writer Options or Qwen Rewriter Options. Create a draft, import a UTF-8
+`.md` or `.txt`, or choose a task and click **Copy default guide** to edit a
+copy. **Save and select** stores a Markdown file in
+`<ComfyUI user>/minimax_h3_rewriter/system_prompts` and selects it in
+`system_prompt_file`. If a workflow moves to a different server, copy the
+file to that server's library too.
+
+![System prompts editor with import, a default guide task selector, and Save and select](docs/system_prompts_editor.png)
+
+Text in `system_prompt` takes precedence. When the field is empty, the writer
+uses the selected file. **Default guide** uses the built-in guide for the task.
 
 Two things do not move. The task message is never replaced — it carries the
 prompt, the aspect ratio and the duration, which any guide needs. And the answer
@@ -682,18 +970,29 @@ rewrite. It does what [Multi Reference Caption](#minimax-h3-multi-reference-capt
 and both writer nodes do, in a single box, for all five tasks. Those three stay
 exactly as they are — nothing you have already built stops working.
 
+For H3 writing from text, images, video frames, audio or RefMods through a running llama-server or a remote API, use the
+additional [API Universal Writer](docs/api_writer.md). Configure connections and models
+in **API providers**, and generation settings in **API Writer Options**. Keys are
+encrypted on the Windows or Linux server; workflows store connection/model IDs.
+Start with **11 - Write through an API** in the workflow templates.
+
+![API Universal Writer with task, aspect ratio, provider and model selection, reference inputs and prompt outputs](docs/api_universal_writer_node.png)
+
+![API Writer Options with generation limits, response format, video sampling, audio rate and repair settings](docs/api_options_node.png)
+
 The reason to fold them together is **order**. `Picture 1` and `Picture 2` are
 not interchangeable in FL2VA: one opens the video and the other closes it. Until
 now the only thing deciding which was which was the order the caption node
 happened to write them in, which came in turn from which slot each was plugged
 into. Real, load-bearing, and nowhere on screen.
 
-![The Universal Writer node: five reference slots each with a checkbox on its own row, then a strip of four coloured squares reading subj 1 over ref_1, pic 1 over ref_0, vid 1 over ref_3 and aud 1 over ref_2 with a line of help under them, a task switch with Ref2VA lit, six aspect-ratio rectangles drawn to proportion with 1:1 chosen, a duration slider at 7.2, and the prompt and both model dropdowns below](docs/node_universal_writer.png)
+![The Universal Writer node, with a Load Video and a Load Image node feeding it: four reference rows each with a checkbox, three of them connected, then a strip of three coloured squares reading vid 1 over ref_0, aud 1 over ref_1 and pic 1 over ref_2, each with an "+ instr" button and a line of help under them, a task switch with Ref2VA lit, eight aspect-ratio rectangles drawn to proportion from 48:9 to 9:16 with 16:9 chosen, a duration slider at 15.1, the prompt, the captioner and writer dropdowns, and six buttons at the bottom: Model list, Open guide folder, Unload model, Save the last prompt, Edit the last prompt and Prompt library. On the right the six-field answer, written around <Subject 1>, <Picture 1>, <Video 1> and <Audio 1>](docs/node_universal_writer.png)
 
 *Four references on one growing socket — an image used as a subject, an image
-used as a frame, a clip and a sound. The squares are not in slot order: `ref_1`
-was dragged to the front, so it is the one the block will call `Subject 1`. The
-number is a position and renumbers as things move; the slot name under it is
+used as a frame, a clip and a sound — and on the right an answer written around
+exactly those labels: `<Subject 1>`, `<Picture 1>`, `<Video 1>`, `<Audio 1>`. The
+squares are in slot order here because nothing has been dragged; the number is a
+position and renumbers the moment anything moves, while the slot name under it is
 what stays with a square.*
 
 **One socket takes an image, a clip or a sound**, and more slots appear as you
@@ -715,16 +1014,45 @@ moves.
 
 - **Drag a square** to move it. The numbering follows immediately.
 - **Click its label** to change what an image is for: `pic` → `subj` → `vid` and
-  round again. A clip and a sound are what they are, so those do not cycle.
+  round again. A sound is what it is and does not cycle.
+- **Click a clip's label** to count the clip's own sound as a reference too. On
+  `Ref2VA` the band turns purple and reads `vid+a1`: the captioner describes that
+  sound as `Audio 1` in the block, just before the clip, and `references` tells
+  [Reference Slots](#minimax-h3-reference-slots) to hand it to the generator.
+  Clip sounds take the first `<Audio N>` numbers and standalone sounds follow,
+  which is how `MiniMaxH3ReferenceToVideo` numbers them. The captioner has to
+  hear for this — one that cannot is refused by name before anything loads — and
+  a clip with no sound track is said on the node and left unnumbered.
 - **Click its number** to switch that reference off without unplugging it — the
   checkbox on the slot's own row does the same thing from the other side.
 - **Click the band under it** to ask that one reference something other than its
   role's usual question. `+ instr` adds your line to the role's question,
   `= instr` asks it instead; right-click takes it back, hovering reads it out.
+  A square carrying one is ringed in amber for `+` and in orange for `=`, so it
+  does not go unnoticed.
 
 So one socket still produces the four labels Ref2VA allows, and the distinction
 Multi Reference Caption makes structurally — a subject is not a frame — is made
 here on the square instead.
+
+**Every square shows what is plugged into it** — here, on Prompt Rewriter Omni
+and on Multi Reference Caption. A picture shows its thumbnail, a clip its first
+frame with a ▶ in the corner, a sound its waveform with a speaker and the file
+name in small type; the number moves to the corner. Hovering plays a clip and
+flips through a batch of frames, and the tooltip adds the file, the size, the
+frame count and the length. A sound, after a moment's hover, plays its first six
+seconds with the wave lighting up as it goes; a press on the square silences it. A square wired to a loader — Load Image, Load Video,
+Load Audio or VideoHelperSuite's loaders, through reroutes too — shows the file
+straight away, before anything runs. One fed through other nodes shows what
+reached the node on its last run, and stays a plain square until then.
+
+![The strip of a Universal Writer set to Ref2VA, with eleven reference rows, ref_9 unticked. Its squares, left to right: pic over ref_0 showing a black cat with a 1 in the corner, ringed in amber with an amber "+ instr" band; pic over ref_1 showing a wooden fence, 2, ringed in orange with an orange "= instr" band; pic over ref_2 showing a man in a car, 3; vid over ref_3 showing a man walking down a street with a play mark, 1; aud over ref_4 and ref_5, each a speaker and a waveform, 1 and 2; vid over ref_6 showing a figure in a dinosaur mask with a play mark, 2; on the second row pic over ref_7 showing a jewelled turtle, 4; aud over ref_8 with a speaker, a truncated file name, a waveform and 3; and aud over ref_9, dimmed, with its name and waveform still drawn and "--" for a number. Under the strip the task switch with Ref2VA lit, the aspect ratios with 16:9 chosen and duration 10.0](docs/node_ref_strip.png)
+
+*Pictures, clips and sounds tell apart at a glance, and so do two sounds: ref_8 and
+ref_9 come straight from a loader and show their file names, ref_4 and ref_5 came
+through other nodes and show the wave from the last run. ref_9 is switched off —
+dimmed, numbered `--`, still recognisable. The two squares with an instruction
+are the ones ringed.*
 
 **The task switch and the aspect-ratio picker are the same idea**: the choice is
 the picture rather than a line of text in a dropdown. And the task switch reads
@@ -737,11 +1065,15 @@ are counted, not sockets: turn a picture into a subject and the task it was
 blocking lights up. A task already chosen and no longer possible turns red rather
 than quietly failing later.
 
-**`duration` is a slider, in tenths of a second.** How far it reaches is the
-node's own `max_duration` property — right-click the node, Properties Panel —
-and it is 30 seconds until you change it. A widget's range is fixed when the node
-is declared and one number cannot suit every graph, so the server accepts up to
-ten minutes while the slider spans whatever you actually work with.
+Every rectangle in the picker is drawn to its own proportion within one budget,
+so the wide end reads as how little height is left: `21:9`, `32:9` and `48:9`
+come out at roughly 15, 10 and 6 pixels tall. A node too narrow to hold the whole
+row wraps it onto a second line rather than cutting the last rectangles off, and
+grows by exactly that much.
+
+**`duration` is a slider, in tenths of a second**, and how far it reaches is
+yours to set — right-click the node, `duration`. See
+[The duration widget](#the-duration-widget).
 
 **Two model widgets, because there are two jobs.** `caption_model` reads the
 references and `writer_model` writes the prompt from MiniMax's guide; `clip`
@@ -766,7 +1098,9 @@ unplugged.
 **The outputs are the union of both writers'** — the three T2VA fields, the six
 Ref2VA fields, and the reference block itself. A task that does not write a field
 leaves it empty, because a node's outputs cannot change with the value of one of
-its widgets.
+its widgets. The last output, `references`, is not text: it is what the strip
+numbered, for [Reference Slots](#minimax-h3-reference-slots) to wire into
+`MiniMaxH3ReferenceToVideo` in the same order.
 
 > **One difference from Multi Reference Caption.** That node writes the block in
 > the guide's own order — subjects, pictures, videos, audio — whatever the wiring
@@ -791,6 +1125,134 @@ its widgets.
 > Caption does: its growing inputs are `io.Autogrow` from the v3 node API. On an
 > older install these two go missing and the rest of the pack registers as
 > before.
+
+### MiniMax-H3 Image Prompt Writer
+
+Expand an image request into a detailed caption for [MiniMax-H3-Image](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image).
+With no active pictures the writer expands a text-to-image prompt. With one to
+16 active pictures it writes an edit prompt. The first active picture is the base.
+Reorder the chips, disable inputs with their checkboxes, and add instructions via
+`+ instr`. An IMAGE batch contributes its first frame.
+
+![Image Prompt Writer in Local GGUF mode with a base image and an edit request](docs/image_prompt_writer_node.png)
+
+- **Local CLIP**: connect `qwen3.5_9b_w4a8_gptq.safetensors` through Load CLIP,
+  type `minimax`. This is the prompt model used in the
+  [ComfyUI H3 Image templates](https://docs.comfy.org/tutorials/image/minimax/minimax-h3-image).
+- **MiniMax Context IR**: set `MINIMAX_API_KEY` in the ComfyUI server environment,
+  or use **API providers** to select a saved profile. The profile needs
+  `https://api.minimax.io/v1` (global) or `https://api.minimax.cn/v1` (China),
+  a credential, and `MiniMax-H3-Image` in **Allowed models**. This calls the
+  [prompt enhancement endpoint](https://platform.minimax.io/docs/api-reference/image-generation-h3-context-ir)
+  with the instruction and enabled pictures. MiniMax bills the expansion.
+- **API Writer** uses the selected Chat Completions model on a configured local
+  or remote server. Pick the profile and model, as in **API Universal Writer**.
+  Text-to-image works with a text model. For Image Edit, enable `image` in the
+  model's **Allowed models** settings and use a server that accepts interleaved
+  text and images. Active pictures are sent in chip order.
+  [MiniMax's public prompt expansion recipes](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image-PE)
+- **Local GGUF** loads the selected model through the pack's local llama.cpp
+  runtime. For Text-to-Image, select a model from **Writers**. For Image Edit,
+  select a vision model and matching projector from **Captioners**. Local files
+  under `models/LLM` are detected by **Model list**. Connect **Rewriter Options**
+  to `local_options` for context, sampling and GPU settings. Image editing uses
+  the llama.cpp build with `llama-server` and the same ordered pictures as API Writer.
+
+Connect **API Writer Options** in API Writer mode to set the token budget,
+temperature, response format and timeout. With response format `text`, the writer
+asks for JSON in the prompt itself. Use `json_object` or `json_schema` when the
+selected model and server support it. The `summary` output shows the profile and
+model used for the request.
+
+Connect `prompt`, `width` and `height` to **MiniMax H3 Image Conditioning**
+in the ComfyUI template. With `aspect_ratio=auto` the writer uses the expander's
+recommendation. Choose a fixed ratio and `area` for control over the canvas,
+or enter an exact `size` with edges divisible by 32 and leave the ratio on auto.
+For editing, **Reference Slots** passes pictures 1 to 9 from `references` to
+Conditioning. For 10 to 16 pictures, wire the originals to Conditioning in chip
+order. Use **bypass** to pass through your text or **repeat_last** to reuse an
+expansion from the session or prompt library.
+
+### P-H3 Prompt Writer (images)
+
+Writes prompts for [Pruna P-H3-Image](https://huggingface.co/PrunaAI/P-H3-Image-Comfy)
+with its official Qwen3.5-9B upsampler. Requires ComfyUI 0.44.0 or newer.
+
+![P-H3 Prompt Writer in Text2Image mode with use_ref_description enabled, a source reference preview and frame selection](docs/p_h3_prompt_writer.png)
+
+Connect **Load CLIP**, type `minimax`, with a `p-h3-image_prompt_upsampler` file to
+`upsampler`. The similarly named 4B text encoder belongs to the image generator,
+not this writer. ComfyUI manages model loading and offloading.
+
+- **Text2Image** writes from the request, aspect ratio and 4 or 8 MP canvas.
+  Connected references are ignored by default and the `references` output is empty;
+  switching modes does not require disconnecting them.
+- **Image2Image** reads up to eight pictures in total. The first enabled picture
+  is the base; drag the reference strip to change the order, click to switch a
+  reference off, and use **role** to say what to take from it. **keep** names
+  what must remain unchanged. By default the canvas follows the base's ratio.
+
+Enable **use_ref_description** in Text2Image to write the prompt from the first
+active reference and your request. Its chip is marked **source**; drag the chips
+to choose another source, and use **role** to say which details to take. For an
+IMAGE batch, VIDEO or visual RefMod, only the first selected frame is described;
+**frame** opens a picker for one frame, and Automatic uses the first frame.
+The same upsampler first describes the frame, then writes a standalone prompt
+from that description and your request, with no image supplied to the second
+step. Your request takes priority; an empty request describes the pictured scene.
+The image generator receives text only, and `references` stays empty. `summary`
+shows the generated visual description. Canvas
+settings still come from the ratio picker or `aspect_ratio`. With `bypass` on,
+the source is prepared for its preview and the original prompt passes through.
+
+The reference chips sit above the mode tabs. Optional `aspect_ratio` accepts
+STRING or COMBO values such as `16:9`, `3840x1080` or `1.78`, overriding both
+the ratio picker and `match_image_ratio`. Custom ratios keep the selected
+megapixel budget, with canvas dimensions rounded to multiples of 32.
+
+Wire `prompt`, `width` and `height` to **p-h3-image Conditioning**. Pass
+`references` through **MiniMax-H3 Reference Slots**, connecting `picture_1` to
+`image_1`, `picture_2` to `image_2`, and so on. Use the P-H3 text encoder and VAE
+on Conditioning. Its sampler uses P-H3's eight-step sigma schedule and
+ModelSamplingMiniMaxH3 shifts of 1.0/1.0; see the example workflows.
+
+Visual **RefMods** expand into ordinary pictures. `refmod_images` selects up to
+that many evenly spaced photos or frames per RefMod; all expanded pictures count
+toward the eight-picture limit. Files without stored or decoded pictures need
+the original H3 video VAE on the loader or `refmod_vae`. Strength is applied to
+the pictures. P-H3 re-encodes them: the original RefMod latent is not injected,
+and decoding then re-encoding can lose detail. Audio RefMods are refused.
+`summary` reports the exact Picture numbers after expansion.
+
+Connect native **VIDEO** outputs or the **IMAGE** output of VHS Load Video to
+the same reference sockets. `video_images` automatically selects evenly spaced
+frames from VIDEO and IMAGE batches larger than eight; smaller IMAGE batches
+keep all pictures. All sources share the eight-picture limit.
+
+Use **frames** under a reference to choose exact frames: inspect the overview,
+browse nearby frames or enter a frame number, then tick the pictures to keep.
+**Apply frames** saves the choice in the workflow; **Automatic** restores the
+socket's default selection. Frames pass to both the upsampler and `references`
+in chronological order. For the first preview, run the input branch once with
+`bypass`. Refresh it after changing the source, or if ComfyUI evicts the input
+from its cache. The picker retains small thumbnails, not the full input batch.
+Numbers start at one in the received reference: VHS numbering follows its
+`skip_first_frames`, `select_every_nth` and other processing; RefMod numbering
+follows its stored or decoded pictures.
+
+![P-H3 frame picker with a large preview, numbered filmstrip and selected reference frames](docs/p_h3_frames_editor.png)
+
+The checkpoint's own template and edit brief are kept intact. Image checks cover
+empty output, repetition and invalid reference tags, without requiring video
+fields, shot timings or sound. The prompt library supports saving, editing and
+repeating the result; references and canvas always follow the current inputs.
+`bypass` passes the request through while still preparing those inputs.
+
+Start with **9 - P-H3 text to image** or **10 - P-H3 image editing**. For edits,
+choose your image on Load Image before queuing. Increase `max_length` if the
+upsampler uses its token budget on thinking and returns no final prompt.
+
+![P-H3 image editing result in Save Image: a turtle wearing a red knitted scarf](docs/p_h3_result.png)
 
 ### MiniMax-H3 Reference Caption
 
@@ -889,15 +1351,6 @@ still insists, `instruction` is where to say so in your own words.
 > A model and its `mmproj` sitting together in one folder under `models/LLM` is
 > offered automatically, so you can try another without editing anything.
 
-**A reasoning captioner is handled, not refused.** Qwen3-VL and Gemma-4 E4B write
-a `<think>` block whatever the instruction says — on the GGUF route there is no
-way to ask them not to, since `llama-mtmd-cli` applies the chat template itself
-and carries no `enable_thinking` switch. Everything up to the closing tag is cut,
-so `reference_assets` gets the answer alone. The character count on the node
-stays the raw one, which is how you spot a model spending its budget on reasoning
-instead of on the description; if it spends *all* of it there and never writes
-one, the node says so rather than emitting an empty label.
-
 ### MiniMax-H3 Multi Reference Caption
 
 The same job for a whole shot, in one box. A chain is exact, but it grows: five
@@ -939,14 +1392,15 @@ Squares here do not drag and their labels do not cycle, unlike the
 the guide's own order, and the group an asset is plugged into is what names it.
 
 **The band under a square asks that one reference something else.** Dark while it
-is asked its role's usual question, lit once it is not. Click to write the
+is asked its role's usual question, amber once it is not, with a ring of the same
+colour round the whole square. Click to write the
 question, right-click to take it back, hover to read it. It is per reference
 rather than per node on purpose — a node describing a picture, a clip and a sound
 at once has no single question that suits all three.
 
 The checkbox in that little window decides which of two things your text is, and
 the band then says which: `+ instr` for a line **added** to the role's question,
-`= instr`, on a solid band, for one asked **instead** of it. Both are needed.
+`= instr`, on an orange band, for one asked **instead** of it. Both are needed.
 
 | What you write | Which mode | Why the other one fails |
 |---|---|---|
@@ -979,70 +1433,9 @@ describe by hand.
 > the v3 node API. On an older install it is the only node that goes missing —
 > the rest of the pack registers exactly as before.
 
-### MiniMax-H3 Reference Writer (Ref2VA)
-
-The reading and the writing in one box.
-[Multi Reference Caption](#minimax-h3-multi-reference-caption) turns the pixels
-into text, [Prompt Writer (Ref2VA)](#minimax-h3-prompt-writer-ref2va) turns that
-text into the six sections, and between them runs a single `reference_assets`
-wire. Once one model is good enough for both halves — a multimodal GGUF that also
-follows the writing guide — that wire is the only thing separating two nodes that
-always run together, each with its own options block, its own seed and its own
-output language to keep in step. This node is those two with the wire pulled out.
-
-![The Reference Writer node: seven reference slots down the left with a checkbox on each row and three pictures wired in, nine outputs down the right from rewritten_prompt through the six sections to reference_assets and captions, a prompt box reading "the characters in picture 1 and picture 2 fighting in the location of picture 3, very intense", and two model rows both pointing at Qwen3.8-27B-abliterated Q4_K_M — one with its mmproj, one without](docs/node_ref_writer.png)
-
-*Three pictures, captioned and written in one run — 242.8 s cold on a 3090, ~157 s
-once the weights are cached. The same two model menus point at the same file: one
-entry carries the `mmproj` and reads the images, the other does not and writes the
-prompt.*
-
-
-**It saves wiring, not time.** Two model menus, not one: `captioner` lists the
-multimodal pairs, `writer` lists every text GGUF. Point both at the same file and
-it is still two loads — the captioner runs through `llama-mtmd-cli` and the
-writer through `llama-completion`, and folding them into one box does not remove
-the second binary.
-
-Measured here on an RTX 3090, Qwen3.8-27B-abliterated `Q4_K_M` on both menus and
-three image references: **242.8 s** on the first run, **~157 s** on the next one
-with the weights still cached — which is what the same graph cost as two separate
-nodes (101 s captioning + 56 s writing). The saving is the wire, exactly as
-advertised.
-
-The four input groups, the labels they produce and the switch on each slot's own
-row are [Multi Reference Caption](#minimax-h3-multi-reference-caption)'s, so
-everything that section says about them holds here too. `clip` works the same way
-as well.
-
-| Output | What it carries |
-|---|---|
-| `rewritten_prompt` | the whole answer |
-| the six section outputs | `subject_definitions` … `non_diegetic_music`, split out |
-| `reference_assets` | the block the node built and handed the writer |
-| `captions` | the descriptions alone, one per line |
-
-`reference_assets` is an output rather than an internal detail on purpose: when a
-rewrite comes out wrong, the first question is what the writer was actually
-given.
-
-**One seed drives both halves** — the captions and the rewrite. That is the point
-of merging, and it is also the one thing a graph rebuilt from the two-node
-version cannot reproduce, since that one had a seed on each.
-
-**No references, no rewrite.** If every asset comes back without a description,
-the writer is not run at all: a Ref2VA prompt whose whole premise is its
-references would otherwise be composed from none, after a minute of generation
-nobody asked for. A single asset that fails is skipped instead, label and all,
-and the node's summary counts it.
-
-> **This node needs a recent ComfyUI**, for the same `io.Autogrow` reason. It and
-> `Multi Reference Caption` register independently, so a version that rejects one
-> still gets the other.
-
 ### Captioning with a model ComfyUI already has loaded
 
-Both caption nodes, the Universal Writer and `Reference Writer (Ref2VA)` have a `clip` input. Connect a multimodal text encoder from
+Both caption nodes and the Universal Writer have a `clip` input. Connect a multimodal text encoder from
 `CLIPLoader` and every asset is described by *that* model instead of by the GGUF
 in `model` — which then stays exactly where ComfyUI's allocator put it.
 
@@ -1095,6 +1488,41 @@ The GGUF route is not going anywhere: it reaches models ComfyUI has no encoder
 for, and it needs nothing loaded in advance. Leave `clip` unconnected and nothing
 about either node changes.
 
+### The captioner is loaded once, not once per reference
+
+A strip of six references used to be six model loads. `llama-mtmd-cli` runs one
+description and exits, which is right for a single picture and wasteful for a
+strip: the model and its projector were read from disk again for every asset,
+before a pixel was looked at.
+
+Now the whole loop is served by one `llama-server`, started before the first
+reference and stopped after the last. The model, the projector, the sampling,
+the seed and the system turn are the same either way, and only the loading
+changes. Three references on an 8B captioner with a warm file cache: 8.7 seconds
+before, 3.6 after, and the gap widens with every reference you add and with
+every gigabyte the captioner weighs.
+
+Each path repeats itself exactly — the same graph at the same seed gives the
+same caption every time. Between the two, a caption can still land a word apart,
+*a blue circle centered on* against *a blue circle is centered on*, where two
+tokens are near-tied and the two runtimes' batching breaks the tie differently.
+That is float arithmetic rather than a different question being asked, and it is
+why the system turn is stated rather than left out: left out, the difference was
+not a word but a different description.
+
+You do not switch this on, and nothing is downloaded for it: `llama-server`
+ships in the same release archive as `llama-mtmd-cli`, so it is looked for
+beside the captioner that has already been found — and only beside it, since a
+server from another build could pair the model with an older mtmd that cannot
+read the projector this one just accepted.
+
+It is an optimisation and never a requirement. A build without it, a port that
+will not bind, a server that never reports healthy: each is written to the log
+and the run carries on one process at a time, slower and otherwise identical.
+One reference does not start a server at all, there being no second load to
+save. `MINIMAX_H3_MTMD_SERVER` takes `never` to keep the old behaviour and
+`always` to use a server even for a single asset.
+
 ### MiniMax-H3 Guide Prompt (any LLM)
 
 Builds the guide-based `system_prompt` and `user_prompt` and returns them as
@@ -1136,6 +1564,1161 @@ system message. That branch also skips Qwen's thinking suppression, so the empty
 `<think>` block is written for you. It is Qwen-shaped by construction — on Gemma
 or anything else, stay on `plain`.
 
+### MiniMax-H3 Prompt Check
+
+Every other node here writes a prompt and then checks what it wrote. This one
+only checks, and takes the text on a socket — so a prompt that came from
+somewhere else is read by exactly the rules a rewrite from this pack is read by,
+and split into the same fields. Anything that produces MiniMax-H3 prose can feed
+it: another pack's node, a text file loaded into the graph, a prompt found
+online, or something typed into the widget.
+
+No model is loaded and nothing is generated. The run costs a few milliseconds.
+
+![The MiniMax-H3 Prompt Check node: an options socket and three reference sockets labelled ref_0, ref_1 and ref_2 down the left, two of them connected; nine outputs down the right — prompt first, then integrated_multimodal_description, subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape and non_diegetic_music, with findings last. Below them a tall empty prompt box, a task dropdown reading Ref2VA, a duration of 9.9, and one button: Save the last prompt](docs/node_prompt_check.png)
+
+*The outputs are the Universal Writer's, minus the two that describe its own captioning work — so a check node drops into a graph where a writer stood, and a writer drops in where a check node stood. The duration is 9.9 rather than a round number because it is whatever the prompt was written for, not what you would have asked a writer for. And there is one button rather than two: the node runs no model, so there is nothing to repeat and nothing to point at the library — but what it read, it can keep.*
+
+| Input | What it is for |
+| --- | --- |
+| `prompt` | The text to read. It leaves the first output untouched, so the node can sit in the middle of a graph without changing what reaches the generator. |
+| `task` | Which task the prompt was written for. It decides which fields the answer should have, how many references of each kind it may cite, and whether an alignment line belongs at the top — so getting it wrong makes the reading wrong rather than absent. |
+| `duration` | How long the target video is. Cut times are read against it, so set it to what the prompt was written for rather than to what you would ask a writer for. |
+| `references` | Optional. Only their kind and number are read — nothing is decoded and no captioner runs. With them connected, the reading also covers what the text cites against what is actually here; with nothing connected those two rules are skipped and the rest still apply. |
+| `options` | Optional, and only `self_check` is read from it: how much is announced on screen. |
+
+The outputs are the prompt, the seven fields any task can fill, and `findings` —
+the same block the node writes under itself, `!` for a warning and `-` for a
+note, empty when there is nothing to say. That output always carries everything
+found: `self_check` governs what the nodes announce during a run, which is a
+question about noise, and wiring the output is asking.
+
+**Save the last prompt** is on it as well, so a prompt that arrived from
+elsewhere and read clean can go into [the prompt library](#the-prompt-library)
+under a name, a description and groups, exactly like one this pack wrote.
+
+One reading is worth expecting. Most prompts written for H3 by hand are prose:
+no field labels, no shot list, no tags. Read as `T2VA` such a text is reported
+as missing its fields and its `[Shot 1]`, and that is a true reading rather than
+a fault — a prompt like that is an *instruction to a rewriter*, not a finished
+H3 answer. Feed it to one of the writers and check what comes back instead.
+
+### MiniMax-H3 Prompt Reducer
+
+Every other node here expands. This one contracts: it turns a finished H3 prompt
+back into the short line it could have been written from.
+
+```
+integrated_multimodal_description: [Shot 1] Live-action, cinematic, a low-angle medium
+shot frames a sleek black cat walking steadily along the top of a weathered wooden
+fence in a quiet suburban yard at dusk. The camera tracks right with small amplitude
+at slow speed, following the feline as its soft fur catches the fading golden light...
+
+overall_soundscape: A gentle evening breeze rustles through nearby grass and leaves...
+non_diegetic_music: A sparse piano melody at a slow tempo...
+```
+
+comes back as
+
+```
+A black cat walks along a wooden fence in a yard at dusk.
+```
+
+Three things it is for. Changing one word of a prompt you liked without
+rewriting the other four hundred — reduce, edit the line, feed it back to a
+writer. Feeding a prompt written for H3 to a generator that wants a short one:
+an H3 prompt is H3-shaped, and Wan, Hunyuan and Kling are not. And putting a
+readable line on a prompt you saved, where the card shows a name rather than a
+paragraph.
+
+**Half of this is not a job for a model, and that is what makes it work.** An H3
+prompt is not prose — it is a known shape: named fields, the fixed alignment
+sentence at the top, `[Shot 2] At 0:03` markers through the body, `<Picture 1>`
+tags wherever a reference is cited, dialogue fenced in `<d>`. All of that is
+scaffolding, all of it is recognisable by rule, and all of it comes off before a
+model is asked anything. What reaches the model is one paragraph of ordinary
+description under a short instruction, which is why a 4B does this well. Asked
+to "reverse this document" instead, it would not.
+
+Reference bindings go off with the rest of the scaffolding, and that is
+deliberate: for Ref2VA, `subject_definitions` and `retention_analysis` describe
+*the assets*, and a short prompt that kept them would describe pictures the next
+run will not have.
+
+| Input | What it is for |
+| --- | --- |
+| `prompt` | The finished prompt to shorten. Any of the five tasks, and you do not have to say which: the text is split against every field name either family uses, and one with no field names at all is read whole as the description. |
+| `model` | Any instruction-following GGUF, from the same list the writers use — including `on disk:` and `ollama:` entries — and the **Model list** button under the node edits it. This asks much less of a model than writing does, so the smallest entry in the list is a reasonable choice here even when it is not one there. |
+| `detail` | How much comes back. `idea` is the bare line, ten words at most; `sentence` allows the place and the time of day; `paragraph` keeps one sentence per thing that happens, which is what a prompt with several shots needs if the order is to survive. |
+| `subjects` | How specifically people are named: `as written`, `age and gender`, or `impersonal`. |
+| `keep_camera` | Keep the shot size, the angle and the camera move. Off by default — the camera is usually the writer's invention rather than yours, and leaving it out lets the next rewrite choose again. |
+| `keep_audio` | Fold the soundscape and the music into one sentence at the end. Off by default, and off means the sound sections never reach the model at all: they are dropped by the parser, not by the instruction. |
+| `keep_style` | Keep the medium and the look the prompt opens with — live-action, animation, cinematic, documentary. |
+| `language` | Which language the answer comes back in. Empty means the language of the input. On this node it is a second pass — the line is shortened first and translated afterwards — which is what makes it reliable; the sub-section below says why it has to be. |
+| `greedy`, `seed`, `keep_model_loaded` | As on the writers. Greedy is worth keeping on here: sampling is what turns "a black cat" into "a sleek obsidian feline". |
+| `options` | Optional. The usual [Rewriter Options](#minimax-h3-rewriter-options) node — `device`, `n_ctx`, `gpu_layers`, `gguf_runtime` and the rest. |
+| `bypass` | Hand `prompt` straight to the output and run nothing. |
+| `system_prompt` | Replace the whole assembled instruction with your own. `detail`, `subjects` and the three keeps then stop applying — they exist only to build the text you are overriding. `language` still applies, because it is a separate request rather than part of that text. The parsing still happens either way, so what your instruction is handed is the cleaned scene rather than the raw text. |
+
+Two outputs: `short_prompt`, and `scene` — the description with the scaffolding
+taken off and nothing else done to it. No model has touched `scene`. Wire it
+when the deterministic half is all you wanted.
+
+![The MiniMax-H3 Prompt Reducer node with a Show Any node beside it: an options socket on the left, short_prompt and scene as the two outputs on the right, a tall prompt box holding a full I2VA prompt with its integrated_multimodal_description and [Shot 1] marker, then the widgets — a 35B model on disk, detail on idea, subjects on impersonal, keep_camera and keep_audio true, keep_style false, language reading Chinese, greedy true, a seed set to randomize, keep_model_loaded and bypass false, an empty system_prompt box, and the Model list button under it. Under the node the status line reads '110 words in, 33 characters out - 1 shot markers dropped - translated into Chinese', and below it the two Chinese sentences themselves, which the Show Any node repeats](docs/node_reducer.png)
+
+*Four hundred words of cat, fence and dusk down to two short Chinese sentences, in 25 seconds on a 35B. Three axes are doing visible work at once: `detail` is on `idea`, so what comes back is the bare line; `keep_camera` put the low-angle tracking shot back into it; `keep_audio` folded the whole soundscape into the second sentence; and `keep_style` is off, so the `Live-action, cinematic` the prompt opened with is gone. The count is in characters rather than words because Chinese does not write the spaces a word count needs.
+
+One thing it also shows honestly: `subjects` is on `impersonal`, and the cat still comes back black. The rule asks for the bare kind and this model kept the colour — that axis leans hardest on the model of the three, and it is people it is really aimed at.*
+
+#### What the axes actually do
+
+One prompt, one 4B, the axes moved one at a time. The input was a documentary
+I2VA prompt about an elderly fisherman hauling a net, two shots, with a
+soundscape and a cello drone:
+
+| Setting | What came back |
+| --- | --- |
+| default | An elderly fisherman with a thick grey beard and a faded yellow oilskin jacket hauls a dripping net over the gunwale of a small wooden trawler under a bruised pre-dawn sky. |
+| `detail: idea` | An elderly fisherman hauls a net on a boat. |
+| `subjects: age and gender` | An elderly man hauls a net on a boat under a pre-dawn sky. |
+| `subjects: impersonal` | A subject hauls a net over the side of a boat under a pre-dawn sky. |
+| `keep_camera` | A handheld close-up follows an elderly fisherman... |
+| `keep_style` | Live-action, documentary style. An elderly fisherman... |
+| `keep_audio` | ...under a pre-dawn sky. Waves slap the hull, rope creaks, gulls cry overhead, and the man breathes heavily. A low cello drone underneath. |
+
+`impersonal` is for templates you fill in afterwards. Fed to a generator as it
+stands, it produces exactly the anonymous nothing it asks for.
+
+There are four axes rather than one abstraction dial because they are
+independent. How long the answer is and how specifically it names people are
+different questions — a one-line prompt can still say "a woman in a red coat" —
+and the camera, the sound and the film look are each kept or dropped on their
+own.
+
+#### `language` is a second pass, and it has to be
+
+Asking for the reduction and the language in one request does not work. The
+worked example inside the instruction is written in English and cannot be
+anything else — nothing here can translate it into a language typed into a
+widget — and a model copying the demonstration copies its language along with
+everything else it copies from it.
+
+That failure is not uniform, which is what makes it worth describing. With the
+three keeps *off*, the example is short and the language rule was obeyed. With
+them *on*, which makes the example longer and more elaborate, three models in a
+row answered in English however the rule was phrased and wherever it was placed
+— including as the last line of the system prompt, after the example.
+
+So the Reducer shortens first and translates the finished line afterwards, in
+its own request. That request has one objective, no example to copy and nothing
+to trade off against, and the same models obey it: every combination tried came
+back in the language asked for, on a 4B, a 9B and a 35B, in Russian and in
+Chinese. It costs one short generation on a model that is already loaded, and
+the node keeps it loaded between the two whatever `keep_model_loaded` says about
+afterwards.
+
+Two things follow from the design:
+
+- **`system_prompt` does not switch it off.** The three keeps, `detail` and
+  `subjects` all stop applying when you replace the instruction, because they
+  exist only to build the text you replaced. `language` is not in that text at
+  all, so it still applies.
+- **`Reduce Prompt (any LLM)` cannot do this**, because it builds one request
+  and runs nothing. There the language is a rule inside the instruction, obeyed
+  or not depending on the model — which is exactly the behaviour described
+  above. If a short prompt comes back from that node in the wrong language, this
+  is why, and the Reducer is the reliable path.
+
+What remains is translation quality rather than translation refusal: a small
+model leaves the occasional word untranslated. That is the model, and a larger
+one leaves fewer.
+
+#### Effect tokens through the reducer
+
+An [effect embedding](#minimax-h3-effect-embeddings) written into the description
+comes out the other side untouched, small `e` and all — the capitalisation that
+tidies the start of a sentence knows to leave one alone. A token placed *above*
+the first field label does not survive, because the head of a prompt is dropped
+along with the alignment sentence and everything else that is not the description
+or the sound. That is the reducer's contract rather than an oversight: what it
+hands back is a reusable line, and the head of an H3 prompt binds it to
+particular reference frames.
+
+Worth knowing too: the word count on both this node and the check counts a token
+as one word. Its real cost in prompt positions is on the embeddings node's
+`tokens` output.
+
+#### One loop worth knowing
+
+Reducer → edit the line → writer → [Prompt Check](#minimax-h3-prompt-check).
+If the cat is still on the fence at the end of that circuit, both halves of the
+pack are behaving. It is also the cheapest way to find out whether a given small
+model is good enough at this: run it and read the line.
+
+### MiniMax-H3 Reduce Prompt (any LLM)
+
+The same reduction with nothing run: it builds the `system_prompt` and
+`user_prompt` and hands them back as strings for whichever LLM node you already
+use — local, API, remote. Costs no VRAM and no time. The parsing still happens
+here, so the scene your model receives is already clean.
+
+![The MiniMax-H3 Reduce Prompt (any LLM) node with a Show Any node beside it displaying the assembled system prompt: the rules list — never upgrade a word, add nothing, drop the writing rather than the story, answer with one sentence, name the subjects as written, drop the camera, drop the medium, write the answer in Russian — then the output contract, then the worked example with its scene and its answer 'A black cat walks along a wooden fence in a yard at dusk', and last the two lines saying the example is in English and the answer is to be in Russian. Four outputs run down the right of the node: system_prompt, user_prompt, prompt and scene](docs/node_reduce_prompt.png)
+
+*The same reduction with nothing run, in 0.01 s. The whole instruction is visible here, which is the point of the node: 2112 characters of system prompt, 632 of user prompt, and every rule in it put there by a widget. The last two lines are the single-request language attempt described above — this node can only build one request, so that is the best it can do.*
+
+The same four axes steer it, `format` joins the two outputs the way it does on
+[Guide Prompt](#minimax-h3-guide-prompt-any-llm), and the fourth output is
+`scene`, as above.
+
+### MiniMax-H3 Effect Embeddings
+
+MiniMax published ten effect embeddings alongside H3 — bullet time, dark magic,
+fire breath, the Truman Show pull-back, and six more. This node puts them into a
+prompt.
+
+They are not keywords, and the difference matters for everything below. Each file
+holds a single tensor of shape `[N, 5120]`: fifty to a hundred and forty
+positions of prompt that have **already been through the text encoder**, saved as
+numbers. Writing `embedding:minimaxh3_bullet_time` in the text is not a request
+for bullet time in words — it is an instruction to ComfyUI's tokenizer to splice
+those positions into the sequence at that point. So an effect costs prompt
+*length* rather than adjectives, it arrives at full strength or not at all, and
+no rewording of it is possible. There is nothing to phrase.
+
+| Effect | Positions | Effect | Positions |
+| --- | --- | --- | --- |
+| Art is explosion | 50 | Kiss camera | 97 |
+| Dark magic | 59 | Fire breath | 118 |
+| Truman show | 90 | Blooming flowers | 123 |
+| Bullet time | 94 | Spiral ascent | 131 |
+| Storm magic | 137 | Four seasons | 142 |
+
+**This needs ComfyUI 0.33.0 or newer.** That is the release where `embedding:`
+started reaching the MiniMax-H3 tokenizer; on anything older the token is read as
+ordinary words. The node checks your version and says so.
+
+![The MiniMax-H3 Effect Embeddings node beside a Show Any node. Two badges sit above the title bar: the pack's own, and a grey one reading "bypass". Three outputs run down the right edge — prompt, wired across to the other node, then tokens and findings. Below them a text box holds a three-field T2VA prompt: integrated_multimodal_description: A cat walks along a fence at dusk, overall_soundscape: Wind in the grass, non_diegetic_music: N/A. Under it the placement widget reads "start of the description". Then the grid of ten, each row a checkbox, a name and a cost: Art is explosion 50 tok, Blooming flowers 123 tok, Bullet time 94 tok, Dark magic 59 tok, Fire breath 118 tok, Four seasons 142 tok, Kiss camera 97 tok, Spiral ascent 131 tok, Storm magic 137 tok, Truman show 90 tok. Three are ticked — Art is explosion, Dark magic and Fire breath — their boxes green with a white tick. A line under the grid reads "3 selected, 227 tokens", and below it the bypass widget reads false. There is no download button. The Show Any node displays the result: the three tokens run together after the integrated_multimodal_description label and in front of the sentence, then overall_soundscape and non_diegetic_music exactly as they were written](docs/node_effect_embeddings.png)
+
+*Nothing here is loaded or generated — the node writes a hundred characters into
+a text and reads ten file headers. The download button is absent rather than
+disabled: all ten are on disk, so there is nothing to fetch and no reason for the
+row to take up space. The costs in the right-hand column are read out of the
+files themselves, not from a table in this pack, and 50 + 59 + 118 is the 227
+under the grid. This is the `start of the description` placement, which is why
+the three tokens open the description field rather than sitting above it — and
+why the blank lines that follow them will reach H3 as single spaces, which the
+`findings` output says out loud.*
+
+| Input | What it is for |
+| --- | --- |
+| `prompt` | The prompt to put the tokens into — a writer node's output, a loaded file, something typed. It is passed through character for character apart from the tokens themselves. |
+| `placement` | Where the tokens go: the start of the description, the top of the prompt, or the end. Not a matter of taste — see below. |
+| `effects` | The grid of ten. A tick, the name, what it costs, and a mark on the ones that are not downloaded yet. |
+| `bypass` | Hand `prompt` through and put no tokens in it. `tokens` comes back 0, `findings` empty, no file header is read. The node's title bar carries the switch as a badge, like the writers. |
+
+| Output | What it is |
+| --- | --- |
+| `prompt` | The prompt with the tokens in it. |
+| `tokens` | How many positions the chosen effects take up — read out of each file's own header, so it is the real number rather than a table in this pack. |
+| `findings` | What the node noticed, one per line. Empty when there is nothing to say. |
+
+Files are fetched by the button on the node into ComfyUI's own
+`models/embeddings` folder, which is the only place `embedding:` looks. All ten
+come to about ten megabytes. Running the node twice does not stack the tokens —
+it takes its own back out before it puts them in — so unticking an effect removes
+it from a prompt that already had it.
+
+#### Every way this fails is a silent one
+
+That is the reason it is a node at all rather than something you type. ComfyUI
+drops a token it cannot use with one line in the console and no other sign: the
+video generates, it simply generates without the effect, looking exactly like a
+prompt that never asked for one. Three ways that happens, all of them things the
+self-check now looks for:
+
+- **A capital letter.** The test is `word.startswith("embedding:")` and nothing
+  else, so `Embedding:` is not a smaller mistake than a typo. (The Prompt Reducer
+  used to introduce one by capitalising the start of a sentence. It no longer
+  does.)
+- **A token stuck to the word in front of it.** Tokens are found after
+  whitespace, or at the very start of the text. `a cat.embedding:x` is four
+  ordinary words.
+- **A full stop on the end of the name.** A trailing comma is stripped by
+  ComfyUI and forgiven; a full stop is looked for as part of the file name. This
+  one is worth knowing precisely, because it is a trap that hides on Windows:
+  the path layer there drops a trailing dot, so `embedding:minimaxh3_dark_magic.`
+  loads on Windows and quietly loses the effect on Linux and macOS. The prompt
+  you share is not the prompt they run.
+
+Weights do not work either — `(embedding:x:0.8)` is read as literal text, because
+H3 tokenizes with weights disabled. There is no way to ask for a weaker effect.
+
+#### Placement is not a matter of taste
+
+ComfyUI's tokenizer joins everything that follows a token onto one line: the text
+after `embedding:name`, up to the next token, goes through `' '.join(text.split())`
+before H3 sees it. A token at the top of a prompt therefore flattens every blank
+line between the fields below it into a single space.
+
+`start of the description` — the default — opens the description field itself,
+after its label. That is the field the writers put the scene in and the field
+every downstream node reads, and it is the position an effect was meant to
+modify. The fields below it are flattened.
+
+`end of the prompt` puts the tokens last. Nothing follows them, so nothing is
+flattened, and the prompt reaches H3 with its field separators intact.
+
+`top of the prompt` puts them above everything, before the alignment sentence.
+
+A prompt with no field labels at all has no description to open, so it falls back
+to the top and says so on the `findings` output.
+
+One thing to know if you use the Reducer: a token above the first field label is
+dropped by it, along with the rest of the prompt's head. The reducer keeps the
+description and the sound, not what sits above them. A token inside the
+description survives.
+
+What is *not* known here: whether two of these combine into anything sensible.
+They are separate pieces of encoded prompt, and asking for a spiral ascent
+through four seasons is asking the model to reconcile them. The node allows any
+combination because there is no reason to forbid one; whether it is worth
+generating is yours to find out.
+
+### MiniMax-H3 LoRA Triggers
+
+A LoRA trained with a trigger word in its caption prefix does nothing at all
+until that word is in the prompt. This node keeps the list of those words on the
+node, with the workflow, and puts them back into a finished prompt.
+
+Nothing upstream knows about them. The writers write prose, the reducer shortens
+it, the self-check judges it — and a word whose only job is to wake an adapter
+three nodes later is exactly the sort of thing all three drop. So it gets typed
+in by hand after every run, and lost on the next one. That is the only place in
+the whole pipeline where finished text has to be edited by hand, and it is the
+one part of a prompt that cannot be regenerated.
+
+One row is one adapter: a grip, a tick, a name for your own use, the words that
+go into the prompt verbatim, a short mark saying where they go, and a cross to
+remove the row. A row can hold several words separated by commas, which is what
+an adapter with more than one trigger needs — they are checked and added one at a
+time, so a row is never half-duplicated. Triggers that want different parts of
+the prompt want different rows.
+
+Drag a row by its grip to move it. The order is not decoration: rows sharing a
+placement are written into the prompt in list order, which is the order they read
+in.
+
+![The MiniMax-H3 LoRA Triggers node beside a Show Any node. Two badges sit above the title bar: the pack's own, and a grey one reading "bypass". Three outputs run down the right edge — prompt, wired across to the other node, then added and findings. Below them a text box holds a three-field T2VA prompt: integrated_multimodal_description: A cat walks along a fence at dusk, overall_soundscape: Wind in the grass, non_diegetic_music: N/A. Under it two rows of the list. Each is a drag grip, a green checkbox with a white tick, a field for the name, a wider one for the words, a placement mark and a cross: "Facial realism" holding "ohwx face" marked body, and "Neon" holding "neon glow, wet asphalt" marked top. The two marks line up in a column, and so do the two pairs of fields. A line under them reads "2 on of 2", then the bypass widget reading false, then a full-width button, "add a trigger". The Show Any node displays the result: "neon glow, wet asphalt" alone on the first line, a blank line, then integrated_multimodal_description opening with "ohwx face." in front of the sentence, and overall_soundscape and non_diegetic_music exactly as they were written](docs/node_lora_triggers.png)
+
+*Two rows, two placements, one pass. `ohwx face` opened the description — after
+the label and in front of the prose, which is the position a caption-prefix
+trigger was trained in — while the second row went to the top carrying two
+triggers at once, checked and written as two. Nothing was taken out to manage
+it: run the same text through again and `added` comes back empty, because both
+words are already there. The placement marks are a fixed column, which is what
+keeps the fields starting and ending on the same pixel in every row; drag a row
+by its grip to change the order they are written in.*
+
+| Input | What it is for |
+| --- | --- |
+| `prompt` | The prompt to put the words into — a writer node's output, a reducer's, a loaded file, something typed. It is passed through character for character apart from the inserted words. |
+| `triggers` | The list. A grip, a tick, a name, the words, the placement mark, a cross; a button below adds a row. Saved with the workflow. |
+| `bypass` | Hand `prompt` through and add nothing. The text goes out exactly as it came in; `added` and `findings` come back empty. The node's title bar carries the switch as a badge, like the writers. |
+
+| Output | What it is |
+| --- | --- |
+| `prompt` | The prompt with the words in it. |
+| `added` | The words this run actually put in, comma separated. Empty when every switched-on trigger was already there, which is the normal state on a second run. |
+| `findings` | What the node did and noticed, one per line. Empty when there is nothing to say. |
+
+Driving it from the API rather than from the interface, the widget takes the JSON
+array of `{name, words, where, on}` objects the interface writes — and two
+friendlier shapes as well, because they are what anyone writes first: a plain
+array of strings is read as a list of trigger words, and text that is not JSON at
+all is read as one row's worth of words.
+
+#### Where each word goes
+
+The mark in the row is short on purpose. Seeing where every word is bound for
+without opening anything is half of what the list is for, and five full dropdowns
+would not fit across a node at any sensible width. Clicking the mark opens the
+choice.
+
+| Mark | Placement | Where it lands |
+| --- | --- | --- |
+| `body` | `start of the description` | Opens the description field itself, after its label. |
+| `top` | `top of the prompt` | Above everything, before the field labels. |
+| `sound` | `start of the soundscape` | Opens `overall_soundscape`, after its label. |
+| `music` | `start of the music` | Opens `non_diegetic_music`, after its label. |
+| `end` | `end of the prompt` | Last, after everything. |
+
+The description is the default and usually the right answer: it is the field the
+writers put the scene in, the field every downstream node reads, and the position
+a caption-prefix trigger was trained in. The top and the end are positions rather
+than fields, which is why those two still work on a text carrying no labels at
+all.
+
+The field set differs by task — three for T2VA, six for Ref2VA — and the node
+only ever sees a text, which does not say which task wrote it. So a placement
+naming a field this particular prompt has not got is not an error: the words go
+to the top instead and the `findings` output says so.
+
+A field that is there but says `N/A` gets a note of its own. Ref2VA prompts are
+full of `non_diegetic_music: N/A`, and words put at the start of one leave a
+field that names something and then says there is none of it. The node says so
+and changes nothing else. Replacing the marker would have the field claim there
+*is* music, called `ohwx face` — and the self-check reads that field; dropping
+the words would be the node overruling a placement you asked for. Both are
+decisions about your prompt, and this node does not make those.
+
+One difference from the effect embeddings worth knowing, because the habit does
+not carry over: ordinary words do not flatten the line breaks below them.
+ComfyUI's tokenizer joins everything after an `embedding:` token onto one line,
+but only after one. The top of the prompt is a safe place here.
+
+#### It never takes anything out
+
+This is where the node parts company with `MiniMax-H3 Effect Embeddings`, and the
+reason is worth stating. Those ten tokens are strings known in advance, so the
+node can cut its own back out before it puts them in — which is how unticking an
+effect removes it. These words are yours. Cutting out a trigger spelled `detail`
+would eat a hole in the prose it was sitting in.
+
+So the rule here is presence, not removal:
+
+- A word already in the text is **not added a second time** — matched on word
+  boundaries and without regard for case, so `man` is not found inside `woman`
+  and `Ohwx man` counts as `ohwx man`. It is reported on `findings`.
+- **Unticking a row stops it being added. It does not take it away.** The word
+  may well have come from the writer, and removing somebody else's word is not
+  this node's call.
+
+Running the same text through twice therefore changes nothing, which is what the
+node needs in order to be safe at the tail of a graph that gets run again and
+again.
+
+#### `bypass` rather than Ctrl+B
+
+Both of these nodes carry the pack's own `bypass` switch, with the same purple
+badge in the title bar the writers have: click the badge or tick the widget, and
+the prompt goes through untouched.
+
+ComfyUI's own bypass is not the same thing on a node like this. It stands an
+input in for each output by matching types, and there are three outputs here and
+one socket to fill them from. Measured on the triggers node: `prompt` arrives,
+`findings` is handed the whole prompt as though it were a finding, and `added`
+loses its link altogether — which leaves whatever it fed with no input at all.
+On the embeddings node `tokens` is an INT with no INT input to stand in for it,
+so that link goes the same way. None of it is reported anywhere.
+
+#### Put it at the very end of the graph
+
+After the reducer and after `MiniMax-H3 Prompt Check`. Triggers add words, and
+the check counts words against a ceiling — a node that lengthens the text after
+it has been measured is fine, one that lengthens it before is arguing with the
+measurement. And anything that rewrites the prompt downstream of this will drop
+the words again, which is the failure this node exists to prevent.
+
+#### What it does not promise
+
+Only LoRAs that were trained with a trigger in the caption prefix. Sliders and
+turbo accelerators need no word at all — they work by weight — and on most
+machines those are the majority of what is installed. A trigger list will do
+nothing for them, and that is not a fault in the list.
+
+Nothing is read out of the LoRA files, and that is a finding rather than a
+shortfall. Of forty-four adapters on the machine this was written on, one carried
+`trigger_word`, one carried an empty `trigger_words`, and none carried
+`ss_tag_frequency`. The pack can read a safetensors header already, so this is
+not about cost: the data is not there. And an adapter often answers to several
+words where the metadata has room for one. The list is yours to keep, which is
+also what makes it worth keeping.
+
+### MiniMax-H3 Reference Adapter
+
+The writers take one reference per slot, and that is what makes the strip under
+them work: every asset gets a square, a role and a switch. It is also what puts
+them out of reach of a node that hands its references over *together* — an image
+batch, a list from a directory loader, a bundle assembled by another pack. One
+value holding many has no slot shape to go into.
+
+This node is the join. Collected in on one socket, separated out on nine picture
+sockets, three clip sockets and three sound sockets — which is what the writers
+take, so the strip carries on working exactly as it did.
+
+![The MiniMax-H3 Reference Adapter node. Two inputs down the left: items, unconnected, and bundle, wired to something off the edge of the frame. Sixteen outputs down the right: picture_1 to picture_9, video_1 to video_3, audio_1 to audio_3, and summary. The first three picture outputs run to three preview nodes showing three unrelated photographs. One widget, split_batches, reads true; under it a line of text reads "3 picture(s), 0 clip(s), 0 sound(s)". The node's run time is 0.014s](docs/node_ref_adapter.png)
+
+*One wire in, three out — and thirteen outputs sitting idle, which is the ordinary case rather than a sign of something unfinished. The run cost 14 milliseconds because nothing here is loaded, decoded or described: the three photographs were carried through as they arrived. The line under the widget is the same text as the `summary` output, so what came in and where it went is readable off the node without wiring anything to a preview.*
+
+| Input | What it is for |
+| --- | --- |
+| `items` | References arriving together. Takes any type, because the nodes that produce collections mostly declare none; what each item is gets worked out from the value itself rather than from the wire, and anything that is not an image, a clip or a sound is skipped and counted. |
+| `bundle` | A reference bundle from another pack, if you have one. Its pictures, clips and sounds are read out ahead of anything on `items`. A clip that arrives as frames goes out as a clip, not as pictures, with its paired audio track inside it; a track not paired with a clip is a sound of its own. |
+| `split_batches` | Whether an image batch becomes one reference per frame, or stays one reference made of several frames. |
+
+That last switch is a real choice rather than a formality. Split, six frames are
+six things the video reuses, each described and numbered on its own. Kept, they
+are one thing seen six times, described once — which is what a clip is. Turn it
+off when the batch is frames of a single shot.
+
+Nine, three and three are what Ref2VA can hold, so that is the room there is.
+Anything past it is reported on the `summary` output rather than dropped in
+silence, along with anything skipped. Outputs left over hand on nothing, and a
+writer skips those already, so there is no harm in wiring a socket that turns out
+empty — plug in all nine and let the ones you did not fill sit idle.
+
+It is a node of its own for a reason worth knowing, because it is not a choice.
+Receiving a real ComfyUI list means declaring `is_input_list`, and that flag is
+not per input: it rewrites the shape of *every* argument the node receives. On a
+writer it would change how the prompt, the duration and the options arrive. So it
+lives here, on a node that has nothing else to lose by it.
+
+### MiniMax-H3 Reference Slots
+
+`MiniMaxH3ReferenceToVideo` — ComfyUI's own conditioning node for H3's reference
+mode — numbers its references by the socket they arrive on: the first picture
+socket is `<Picture 1>`, the first sound socket `<Audio 1>`. The writers here
+number theirs by the strip, which you can drag. Wire the same assets to both by
+hand and the two orders agree until the first time a square is dragged; from
+then on the prompt describes one voice, the video is given another, and nothing
+on screen says so. Switching a reference off goes wrong the same way — gone from
+the prompt, still in the video.
+
+So every writer that takes references hands on what it numbered, on a last
+output called `references`, and this node puts each reference on the socket
+carrying its number.
+
+![The MiniMax-H3 Reference Slots node between a Universal Writer and MiniMax H3 Reference to Video. The writer, set to Ref2VA, has four references connected and a strip reading pic 1 over ref_0, aud 1 over ref_2, pic 2 over ref_1 and aud 2 over ref_3; its last output, references, runs into the Reference Slots node. Down the right of that node are nineteen outputs — picture_1 to picture_9, video_1 to video_3, video_audio_1 to video_audio_3, audio_1 to audio_3 and summary — and every media output is wired straight across to the generator's inputs in the same order, ref_image_0 to ref_image_8, ref_video_0 to ref_video_2, ref_video_audio_0 to ref_video_audio_2 and ref_audio_0 to ref_audio_2. The soundtracks switch reads false; under it, "2 picture(s), 0 clip(s), 2 sound(s)" and "picture_1 ← ref_0". The writer ran in 0.011s and the slots node in 0.019s](docs/node_reference_slots.png)
+
+*Wired once, all the way across, and never touched again: the arranging happens in the writer's strip. The squares read ref_0, ref_2, ref_1, ref_3 — so `picture_2` carries ref_1 and `audio_1` carries ref_2, whichever socket they were plugged into, and the generator numbers them exactly as the prompt does. The empty outputs cost nothing: the generator skips an empty socket. Nineteen milliseconds, because pictures and sounds are passed through as they are and there was no clip to decode.*
+
+```
+Universal Writer ─ references ─▶ Reference Slots ─ picture_1 ─▶ ref_image_0 ┐
+                                                 ─ picture_2 ─▶ ref_image_1 ├ MiniMaxH3ReferenceToVideo
+                                                 ─ audio_1   ─▶ ref_audio_0 ┘
+```
+
+Wire it straight across once, in order — `picture_N` to the N-th `ref_image`,
+`video_N` to the N-th `ref_video`, `video_audio_N` to the N-th
+`ref_video_audio`, `audio_N` to the N-th `ref_audio` — and do the arranging in
+the strip from then on.
+
+| Output | What it is |
+| --- | --- |
+| `picture_1` … `picture_9` | The pictures, in the writer's order. |
+| `video_1` … `video_3` | The clips, as frames at 24 fps. |
+| `video_audio_1` … `video_audio_3` | A clip's own sound, paired by number — when the writer counted it, or for every clip with `soundtracks` on. |
+| `audio_1` … `audio_3` | The sounds, as they came. |
+| `summary` | Which output holds what and which writer slot it came from, plus anything that did not fit. |
+
+**A switched-off reference drops out on both sides.** It is not in `references`
+at all, so its socket hands on nothing, and `MiniMaxH3ReferenceToVideo` skips an
+empty socket and closes up its numbering around the gap — the same thing the
+writer did with its labels.
+
+**A subject goes after the pictures.** On the Universal Writer a picture badged
+as a subject is written as `Subject N`, never as `<Picture N>`. The generator
+has no subject socket and numbers it as a picture like any other, so it goes
+after the last picture: the only numbers the prompt is not already using.
+
+**Clips are decoded here, not in the writer.** A writer runs whether or not
+anything is wired to `references`, and fifteen seconds of 1080p as float frames
+is several gigabytes, so the clip travels as the VIDEO it arrived as and costs
+nothing until this node runs. Here it is read at 24 fps — a 30 fps clip loses one
+frame in five, a 12 fps one shows every frame twice — scaled to the canvas
+`MiniMaxH3ReferenceToVideo` would give it anyway, and cut at fifteen seconds, the
+longest reference it is meant for. A trimmed VIDEO is read over its trim. An
+image batch the writer was told to read as a clip is frames already and goes
+through as it is.
+
+**A clip's sound goes across when the writer counted it.** The generator gives a
+clip's sound an `<Audio N>` of its own, numbered ahead of every standalone sound.
+Click a clip's label band in the writer's strip — or tick the speaker box on the
+Universal Rewriter's `reference_video` row — and the writer numbers that sound
+the same way, has it described or heard, and says so in `references`. This node
+then puts it on the clip's `video_audio_N`, and the prompt and the video agree.
+A clip with no sound track has nothing to put there, and the writer has already
+said so and left it unnumbered.
+
+**`soundtracks` gives every clip its sound, whatever the writer did.** It is off
+by default. A clip the writer left silent then takes an `<Audio N>` the prompt
+never gave it, so the prompt's `<Audio 1>` is no longer the sound on `audio_1`;
+the summary says by how many the labels moved.
+
+What each writer hands on is what its prompt names, and nothing it did not read:
+
+| Node | `references` carries |
+| --- | --- |
+| Universal Writer | Every switched-on square, in strip order. Nothing on T2VA. |
+| Prompt Rewriter Omni | Every switched-on square, in strip order. Nothing on T2AV. |
+| Universal Rewriter | Nothing on the 27B tab or on T2VA. The frames the task reads on the 8B tab. On the Omni tab the same frames — or, on Ref2VA, every switched-on row in row order. |
+
+The output is built from the live inputs every time, `bypass`, a library pick
+and `repeat_last` included, and is never stored: the library and the node's
+memory keep text, and a saved prompt comes back with the references connected
+now.
+
+> **Not the Reference Adapter.** That node feeds the writers: it sorts whatever
+> arrives by kind and hands a clip on as a VIDEO, because a VIDEO is what a writer
+> describes. This one feeds the generator, which takes a clip as frames and a
+> clip's sound on a socket of its own. `references` is a type of its own for the
+> same reason — plugged into a node that expects another pack's bundle, a clip
+> would arrive as a VIDEO and fail inside the generator.
+
+> **One chain this does not cover.** A Universal Writer with a block on
+> `previous` counts that block's labels first, while its `references` holds its
+> own references only and starts from one. Use one writer per shot when the
+> output is going to the generator.
+
+> **A RefMod stops it.** `MiniMaxH3ReferenceToVideo` encodes the pictures, clips
+> and sounds it is given, and a [RefMod](#minimax-h3-refmod) is encoded already,
+> so there is no socket to put one on. The node says so and names
+> [MiniMax-H3 Reference Encode](#minimax-h3-reference-encode), which takes the
+> same `references` and replaces both nodes.
+
+### MiniMax-H3 RefMod
+
+A RefMod is a reference that was encoded once and kept: the H3 VAE's latent of a
+picture, a clip, a stack of photos or a voice, in a `.safetensors` file under
+`ComfyUI/models/refmods`, with a header saying which it is. The format is
+[ComfyUI-MiniMaxH3Mod](https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod)'s.
+The RefMods people share on Hugging Face, that pack's single-file bundles and the
+files [ComfyUI-Fantastic-MiniMaxH3-PromptBuilder](https://github.com/Adudeguyman/ComfyUI-Fantastic-MiniMaxH3-PromptBuilder)
+writes are all read here. Making and editing them is what those two packs are
+for; this one only uses them.
+
+This node picks one and hands it to a writer's strip. The template
+**8 - RefMods to video** has the whole chain, from the file to the video.
+
+| Input | What it is for |
+| --- | --- |
+| `refmod` | The entry, by its path under `models/refmods`. A look and a voice saved together — one bundle file, or a pair named `<name>_visual` and `<name>_audio` — are one entry. Press **R** in the graph to list files added since. |
+| `strength` | How strongly the generator follows it. 1 is as saved. Lower mixes the latent toward a heavily blurred copy of itself, so colour, layout and the broad shape stay while the detail goes, and the pictures H3's text encoder is shown are weakened the same way. The writer still reads it at full strength. |
+| `vae` | The H3 video VAE. Most files keep no pictures of themselves — none of the ones on Hugging Face do — and a writer has to see a reference to describe it, so the look is decoded here, once. |
+| `audio_vae` | The H3 audio VAE: the same for a voice, so a writer can hear it. |
+
+| Output | What it is |
+| --- | --- |
+| `visual` | The picture, clip or stack of photos. Empty for a voice alone. |
+| `audio` | The voice. Empty when the entry has none. |
+
+Each output goes into a square of its own on the
+[Universal Writer](#minimax-h3-universal-writer) or the
+[Prompt Rewriter Omni](#minimax-h3-prompt-rewriter-omni-sees-and-hears), where it
+is marked `mod`:
+
+![The Universal Writer with a RefMod's two outputs on ref_0 and ref_1, and ref_2 empty and unticked. Its strip holds two squares marked mod: a green vid over ref_0 showing a decoded photo of the character with a play mark and a 1, and a purple aud over ref_1 with a speaker, the entry's name Yoda, a waveform and a 1, each with an "+ instr" band. Under them the line of help and the task switch with Ref2VA lit](docs/refmod_support_universal_writer.png)
+
+![The Prompt Rewriter Omni with the same two RefMod outputs on ref_0 and ref_1: a green vid square and a purple aud square named Yoda, both marked mod and numbered 1, above the line "drag to reorder - that order numbers the labels - click a square to switch it off - a clip's label: its sound". Below them the five tasks with REF2AV lit, eight aspect-ratio rectangles drawn to proportion with 16:9 chosen, and a duration of 10.0](docs/refmod_support_omni_rewriter.png)
+
+From there:
+
+- **It is called what its file says it is.** A clip or a stack of photos is a
+  `<Video N>` and a voice an `<Audio N>` whatever the badge reads, because that
+  is what the generator calls it. A single picture can still be made a subject,
+  but not a clip, and there is no sound of its own to switch on.
+- **It is described from its pictures,** like any other reference. What the
+  file says about it travels as a hint after the role's own question: a stack is
+  described as one subject seen in separate photographs rather than as a
+  sequence of events, a saved subject name is given to use, and a saved
+  appearance or voice description is offered to keep to where the pictures
+  agree. The Universal Writer writes a voice nobody decoded from its saved
+  description, when it has one. The Omni adapter hears the sound itself, so it
+  refuses such a voice and says to connect `audio_vae`.
+- **The Universal Writer's writer is told what the file says,** in the
+  reference block, ahead of the caption: that a stack is photos of one subject
+  rather than footage, what it was saved as a reference for — a voice being the
+  voice alone, not what plays behind it — and, when a look and the voice saved
+  with it are both on the strip, which label holds the other half:
+  `Audio 1: (saved as a reference for a voice, the voice alone and not what
+  plays behind it; the voice of the subject in Video 1) ...`. The captioner
+  reads the two apart, so neither caption says they belong together, and a
+  voice saved over music is otherwise taken for the music and borrowed for the
+  score. The generator is still handed the whole recording, music and all: the
+  prompt only stops asking for more of it.
+- **The RefMod itself is handed on** in `references`, latent and all, to
+  [MiniMax-H3 Reference Encode](#minimax-h3-reference-encode).
+
+A stack is decoded one photo at a time, because each photo was encoded on its
+own, and a clip whole. Either way it happens once per pick: ComfyUI keeps the
+node's output, and the pictures with it.
+
+A RefMod is not free at sampling time. The node's caption says what it costs,
+and some of the shared ones are heavy: a ten-photo stack at 1024x1824 is 18,240
+tokens riding through every sampling step, as many as eighteen reference
+pictures at 1344x768 or a two-and-a-half-second reference clip. Lowering
+`strength` changes how closely it is followed, not what it costs.
+
+### MiniMax-H3 Reference Encode
+
+`MiniMaxH3ReferenceToVideo` encodes the references it is given. A RefMod is
+encoded already: the generator needs its latent as a reference block of its own,
+and H3's text encoder still needs its pictures. So this node does what
+[Reference Slots](#minimax-h3-reference-slots) and `MiniMaxH3ReferenceToVideo` do
+together, and for a RefMod the one thing neither can.
+
+```
+Universal Writer ─ references ───────▶ references ┐
+                 ─ rewritten_prompt ─▶ prompt     ├ MiniMax-H3 Reference Encode ─ positive ─▶ sampler
+clip, vae, audio_vae ────────────────────────────┘                              ─ latent   ─▶ sampler
+```
+
+Its settings are `MiniMaxH3ReferenceToVideo`'s — `width`, `height`, `length`,
+`ref_image_size` — with the writer's `references` and the `soundtracks` switch
+from Reference Slots. It gives `positive`, the empty `latent` to sample into,
+and a `summary` of what went in, in order, and what it costs.
+
+**Order is the whole contract.** H3's DiT has no index for a reference: a block
+is matched to its label by where it sits. So everything goes in the order
+`MiniMaxH3ReferenceToVideo` uses — every picture, then every clip with its own
+sound just ahead of it, then every sound — and a RefMod takes the place the
+writer numbered. A picture, a clip or a sound is prepared with that node's own
+helpers, sizing and cutting included, so a strip without a RefMod in it encodes
+to the same conditioning it did through Reference Slots.
+
+**What the text encoder is shown of a RefMod.** A picture as it is. A clip at two
+frames a second, as for any reference clip. A stack every fourth photo, two to a
+block — the default of the pack that stores such pictures, and close to what two
+a second of the same latent played as a clip would show. A file that stores its
+pictures is shown those; one that does not is decoded here with `vae` when its
+RefMod node had none.
+
+`vae` and `audio_vae` keep `MiniMaxH3ReferenceToVideo`'s rule for ordinary
+references: without them those reach the text encoder only, and the summary says
+how many did. A RefMod reaches the generator either way.
+
+### MiniMax-H3 Prompt Presets
+
+A thousand finished MiniMax-H3 prompts ship inside the pack, and this node hands
+one of them on. Press **Pick a preset** and the browser opens: twenty shooting
+styles, twenty subjects, the shape of the frame, the number of shots and whether
+anyone speaks, all as tags that narrow the thousand down, with a search box over
+the words themselves. Each row carries the frame of the clip the prompt was
+written for — click it and the clip plays.
+
+They are finished T2VA prompts in the format the writers here produce, the same
+three labelled fields, which makes them useful in two directions. Wire `prompt`
+at the generator and it is used as it stands; wire it into a writer's own
+`prompt` and it is the starting point for a rewrite. That choice is a wire rather
+than a widget, which is why this is a node of its own.
+
+![The MiniMax-H3 Prompt Presets node beside a Show Any node. Eight outputs run down the right of the preset node, prompt first and source last. A preset widget reads 000014; under it two buttons, "Pick a preset" and "Save to the library"; under those the frame of the clip — a motorcycle courier on a sun-bleached desert highway — beside the whole prompt, its three labelled fields legible in full. The prompt output is wired to the Show Any node, which prints the same three fields as plain text. The run took 0.030s](docs/node_prompt_presets.png)
+
+*The preset is on the node rather than behind a dialog: the frame of the clip it was written for and the whole of its text are on the face of it before anything is run. The run itself took thirty milliseconds and loaded nothing — what came out of `prompt` is what the node had been showing all along.*
+
+| Output | What it is |
+| --- | --- |
+| `prompt` | The whole thing, three labelled fields, exactly as a writer here would have produced it. |
+| `integrated_multimodal_description`, `overall_soundscape`, `non_diegetic_music` | The same three, separately. |
+| `seconds`, `width`, `height` | The clip the prompt was written for. Every one of them is about five seconds, and the shot times inside the text are written against that. |
+| `source` | Its number, both addresses the clip can be watched at, and who is owed the credit — for wiring into a text preview when a workflow is going somewhere else. |
+
+**Nothing is downloaded, at install or during a run.** The prompts, their tags
+and one 256-pixel frame each come to 6 MB inside the pack; they are read off disk
+and unpacked the first time something asks, so a session that never opens the
+browser pays nothing, and a run takes single-digit milliseconds. The one thing
+that reaches the network is the clip in the preview, and only when somebody
+clicks a frame: huggingface.co first, hf-mirror.com when that does not answer,
+which is the address that answers from mainland China. Without a connection the
+frames are still there and only the video is missing.
+
+**Save to the library** puts a copy in one of your own prompt sets, through the
+same editor the library uses — name, description, groups, and the self-check
+running as you type. From that point it is an ordinary record: editable, filed
+under your own groups, and available to every writer through the library window.
+The copy says in its description where it came from. The bundled preset is not
+touched by any of it.
+
+A caution worth stating once: these are T2VA prompts for a five-second clip.
+Nothing stops you handing one to a task with references or to a much longer
+video, and nothing will complain, but the text describes neither.
+
+The prompts and the clips they describe are ostris's work, carried here with the
+author's permission and with credit —
+[ostris/minimax_h3_1k](https://huggingface.co/datasets/ostris/minimax_h3_1k). The
+prompts are his own and effectively MIT; the clips are MiniMax-H3 output, whose
+licence forbids using it to train models, and the frames cut from them here carry
+that same restriction. The shooting-style and subject tags are the
+[H3 Atlas](https://cohub.live/baize/video-altas/w/h3-atlas)'s reading of that
+collection. All thousand pass [the self-check](#the-answer-is-checked) with
+nothing to report, which is one way of saying what the format of a good H3 prompt
+actually looks like.
+
+### The duration widget
+
+Every node in the pack that writes or reads a prompt has one, and it means the
+same thing on all nine: how long the target clip is meant to be, in seconds. It
+is a hint rather than a setting — it reaches the model as one line of text,
+`duration: 10s`, and decides how many shots the rewrite plans and how it paces
+them. How long the clip really turns out to be is settled downstream, by whatever
+samples it.
+
+**It takes `FLOAT` and `INT` on the same socket.** The widget itself is a float,
+in tenths, because the cut times a rewrite writes are quoted to a thousandth —
+`At 00:02.378, the camera cuts to` — and asking for 7.5 seconds is as ordinary as
+asking for 8. But most graphs carry a length as a whole number, so the socket
+takes either: an `INT` primitive, a node that counts frames, or a `FLOAT` off a
+maths node all wire straight in, with no converter between. The two Universal
+nodes draw it as a slider and the rest as a number field you can type into; the
+range and the menu are the same either way.
+
+**Its upper end is yours to move.** Right-click the node — on the classic canvas,
+right-click the widget itself and the entry comes first — and there is a
+`duration` submenu with two items:
+
+| Item | What it does |
+| --- | --- |
+| **Default value** | Puts the widget back to the ten seconds it starts at. |
+| **Longest offered…** | Asks for a number and makes it the widget's top end. It is rounded to a tenth of a second and kept in the node, so it travels with the workflow. |
+
+![The classic-canvas context menu over a Universal Writer, headed MiniMaxH3UniversalWriter with `duration` as its first entry, highlighted, and its submenu open to the right holding two items — “Default value (10 s)” and “Longest offered (now 30 s)…”. Below the highlighted entry the node's ordinary menu continues: Set, Get, two greyed-out rgthree queue entries, Run, Reload Node and “Favorite Widget: duration”. Behind the menu the node shows its aspect-ratio chips with 16:9 lit and the duration slider reading 10.0](docs/duration_widget.png)
+
+*Right-clicking the widget itself puts `duration` at the top of the menu, as
+here; right-clicking anywhere else on the node reaches the same submenu further
+down. Both numbers in the submenu are the node's own and are saved with the
+workflow.*
+
+Thirty seconds until you change it, and the server accepts up to six hundred. Two
+numbers rather than one because a widget's range is fixed when the node is
+declared and no single range suits every graph: MiniMax's own guide is written
+around clips of a few seconds, while the stretched pipelines the community has
+built run well past that. So the server takes anything sane, and the widget spans
+what *you* work with — a slider reaching ten minutes is a slider that cannot be
+nudged to 9.
+
+That number is the node's own `max_duration` property, so the Properties Panel
+reaches the same setting; a workflow saved before this existed simply gets the
+thirty.
+
+### Repeating the last answer
+
+Every writer, rewriter and captioner has a `repeat_last` switch. Turn it on and
+the node hands back the answer it produced last instead of running the model
+again — with nothing kept yet it runs once, keeps what it wrote and says so, and
+from then on returns that same text for as long as the switch is on, whatever
+else you change. That is the point of it: a fifty-second rewrite is not something
+to pay for twice while you wire up everything downstream of it.
+
+ComfyUI's own cache cannot do this. A node's cache key is its class, its
+`IS_CHANGED` value and every input it received, so editing the prompt is exactly
+what drops the entry — and `IS_CHANGED` can only add invalidation, never mask it.
+So the answers are kept in a store of the pack's own, one per node.
+
+That store lives in memory for the ComfyUI session and nowhere else: it is not
+written to disk, it does not travel with the workflow, and a restart empties it.
+Every run says where its answer came from in three places — the caption under the
+node, the ComfyUI console, and the switch's own tooltip, which carries the time
+it was kept, its length and the opening of the text. When the inputs no longer
+match the ones that produced it, all three say so rather than pretending nothing
+changed. `bypass` still wins over it.
+
+**And what is kept can be edited.** `Edit the last prompt` opens the answer the
+node is holding in the same editor [the library](#the-prompt-library) uses: the
+prompt in a box you can write in, read as you type by the rules the run was read
+by. Saving splits the fields out of the new text again, so the section outputs
+stay in step with the prose; everything the node kept past its fields belongs to
+the run rather than to the prose and stays as it was. Nothing reaches disk — this
+is the session store, and an edit worth keeping is saved to the library
+afterwards.
+
+The node hands the edited text on the next time `repeat_last` asks it to. An edit
+changes none of the node's inputs, so each writer reports what it is holding as
+its `IS_CHANGED`, the same way it reports the library record it is pointed at;
+without that ComfyUI would go on serving the answer from before the edit.
+
+**Whether the edit reaches the output is a separate question**, and the editor
+answers it before you type. A saved prompt wins over the node's own answer, so
+while one is chosen the edit waits behind it — clear the choice, or edit that
+record instead. With `repeat_last` off the next run simply writes a new answer
+over the edit, and on a greedy seed with unchanged inputs that new answer is
+byte for byte the old one, which looks exactly like being ignored; so saving
+switches `repeat_last` on when nothing else is in the way, the same way choosing
+a library record does.
+
+On the two caption nodes it is the caption that is kept, not the assembled block:
+the numbering belongs to the chain, so the line is written again around whatever
+arrives on `previous`, and an asset connected since is described for real.
+
+The node's own last answer is what the switch hands back by default, and
+[the prompt library](#the-prompt-library) is how you point it at something else
+instead. One switch either way: `repeat_last` decides whether a kept prompt is
+handed on at all, the library window decides which one.
+
+### Unloading a kept model
+
+`keep_model_loaded` leaves the writer in memory after a run. That is what you
+want while iterating on a prompt, and what is in the way once the text is right
+and the card is wanted for video. Turning the switch off does not give the card
+back cheaply: the switch is an input, a changed input is a new run, and the node
+writes the same text a second time before it unloads. Three things let the model
+go without running it again.
+
+**`Unload model`** is a button on every node that has the switch. It unloads
+whatever the pack is holding, at once. Pressed while a node is still writing, it
+waits for that run and unloads after it — whatever `keep_model_loaded` says,
+because the press came later.
+
+**ComfyUI's own `Unload Models`** reaches the pack's models too. They are not
+ComfyUI models and its model management does not know them, so the pack hooks
+itself into the unload. The same goes for everything else that asks ComfyUI to
+unload all models: the `/free` route, the out-of-memory handler, and the
+clean-up nodes of other packs — put one between the writer and the sampler, and
+the writer is gone before the video model loads. It cuts the other way as well.
+A sampler that clears the card for itself, as several wrappers do, takes a kept
+writer along with the rest; and under `--disable-smart-memory` ComfyUI unloads
+everything after every workflow run, so a kept model lasts for that run and no
+longer.
+
+**`repeat_last` on with `keep_model_loaded` off** unloads as well. A node that
+hands back a kept prompt does not run the model, but it still reads the switch:
+the text comes back from the node's own store, the model is unloaded, and
+nothing is written twice.
+
+All three let go of everything the pack holds inside the ComfyUI process — a
+Transformers checkpoint or a GGUF on `llama-cpp-python` — and not only the model
+of the node the button was pressed on. A GGUF run by the llama.cpp binaries was
+never kept: the model leaves with the process.
+
+### The answer is checked
+
+Every fresh answer is read back against the rules of MiniMax's own writing
+guides before it leaves the node — a self-check, silent when it finds nothing.
+When it does find something, it says so in three places: a toast in the ComfyUI
+window with the first few findings, because the caption under a node is easy
+to miss from the other end of the graph; the caption itself, which holds the
+full list above the answer; and the console, for runs nobody is watching. What
+it looks at:
+
+- **Shot structure.** `[Shot 1]` opens the description and carries no cut time;
+  later shots are numbered in order, each with an `At MM:SS.mmm` timestamp that
+  is later than the one before it and inside the requested duration.
+- **Dialogue markup.** `<d>` and `</d>` come in pairs, and every block starts
+  with its `[Language]` tag.
+- **Reference tags, both ways.** A tag the task cannot carry — `<Video 1>` in a
+  frame task, any tag at all in T2VA — is flagged, and so is the opposite: a
+  reference that reached the node but is never cited, which the generator still
+  receives with no say in what it is for. The nodes that see their references
+  check the numbers against what is actually connected; the text-only writers
+  skip that half rather than guess.
+- **Full-reference bookkeeping.** Every `<Subject N>` that
+  `subject_definitions` introduces owes `retention_analysis` a line, and the
+  guide's 350–500 words for `detailed_description` is noted when missed.
+- **The alignment line.** I2VA, FL2VA and L2VA open with a fixed sentence
+  telling H3 where the reference frames land; its absence is worth knowing
+  about before a render finds out.
+- **Effect embedding tokens.** The one rule here that is not MiniMax's: a
+  capital `Embedding:`, a token stuck to the word in front of it, or a full stop
+  on the end of a name is a token ComfyUI will drop in silence. It is in the
+  self-check because the failure has the same shape as all the others — nothing
+  in the output says so — and because that is where you look when
+  [an effect did nothing](#minimax-h3-effect-embeddings). A name that is not one
+  of the ten is a note rather than a warning: it may well be your own textual
+  inversion.
+
+![A warning toast titled "Self-check: MiniMax-H3 Universal Writer", listing three warnings marked with an exclamation point — 5 fields missing from the answer, naming subject_definitions, summary, retention_analysis, overall_soundscape and non_diegetic_music with the advice to lower the temperature or try a larger writer model; the description has no Shot 1, shots being how H3 reads structure; Picture 1 and Picture 2 connected but never cited, the model still receiving them with no say in what they are for — and one note marked with a dash: detailed_description is 1286 words where the guide suggests 350–500](docs/self_check_alert.png)
+
+*One deliberately bad run, read back. The `!` lines are warnings — things H3
+will likely misread; the `-` line is a note — something the guide merely
+suggests. The toast shows the first few findings; the full list sits in the
+caption under the node and in the console, where it outlasts the toast however
+long the toast is given.*
+
+A refusal is the one thing the nodes do enforce, and it is said the same way: the
+sentence appears as a toast under **Stopped** before the exception goes up, so a
+run that halts does not look like it failed for no reason.
+
+Findings are said, never enforced: the answer ships exactly as written, because
+the model is sometimes right to bend a rule and only you know whether this is
+that time. Warnings (`!`) are things H3 will likely misread; notes (`-`) are
+things the guide merely suggests. A prompt handed on from the library is not
+re-checked — it was checked when it was written, and the caption stays with the
+record's name instead.
+
+**How much is said** is `self_check` on the Options node: `warnings and notes`
+is everything; `warnings only` drops the guide's softer suggestions, such as the
+350–500 words, and keeps what H3 will likely misread; `off` says nothing. The
+reading itself always happens — it is regexes over text already in memory and
+costs nothing — so this decides what is reported, not what is looked at. An
+unreadable setting reports everything: a stale workflow should leave the check
+louder than intended, never silent.
+
+The same toast carries the nodes' own warnings, under **Heads-up** instead of
+**Self-check**: a reference the chosen task will not read, a saved prompt whose
+references no longer match what the node is shown, a captioner that came back
+with nothing for a connected asset. Those are about your wiring rather than the
+model's prose, so `self_check` does not cover them and they are always said.
+They were always in the caption and the console; now they are also impossible to
+miss.
+
+**Some of it happens before the run.** A task that cannot use what is connected
+has always been refused before any weights move — `I2VA` with two pictures, a
+clip wired into a frame task. `Ref2VA` now refuses the same way when the strip
+holds more than H3 can take: nine pictures, three clips, three sounds. It used to
+be described first and flagged afterwards, which cost a full captioning pass and
+a rewrite to learn something countable in advance. Subjects are counted apart
+from pictures, so a badge is often the whole fix.
+
+### Acting on what it found
+
+`fix_once` on the Options node lets the nodes do something about the findings
+rather than only report them. It is **off by default**, and off means a promise:
+the answer you get is exactly what the model wrote, with nothing edited on the
+way out.
+
+Turned on, two things happen. **The alignment line goes back on** where it is
+missing — that sentence is fixed text the node already formats when it builds
+the prompt, so a model that dropped it has not made a judgement worth
+respecting. No model runs, nothing can regress. Then, for the mechanical
+findings — a cut time past the end, an unbalanced `<d>`, a tag pointing at a
+reference that is not there — **the writer is asked once more**, with those
+findings folded into the prompt as rules to obey.
+
+Once, never a loop. A model that ignored a rule twice will ignore it a third
+time, and every attempt costs a full generation. Three things keep the single
+retry safe:
+
+- **It is refused on a hopeless answer.** Half the fields missing means the
+  model is not holding the format at all, and a second pass will not change
+  that; the node says to try a larger writer instead of spending another
+  minute.
+- **The constraints travel inside the prompt**, not as a second conversational
+  turn. That keeps the single-turn shape the LoRAs were trained on, so the
+  re-run behaves the same on a trained adapter as on a guided model.
+- **The second answer is kept only if it is better** — fewer warnings, or the
+  same warnings and fewer findings overall. A tie keeps the first. So the worst
+  case is a minute spent, never a worse prompt.
+
+Whatever it did is said on the node: the line restored, the re-run and how much
+it gained, or that the first answer stood.
+
+### The prompt library
+
+`repeat_last` holds one answer per node and forgets it when ComfyUI restarts. The
+library is the other half: prompts you name and keep, in a JSON file under the
+ComfyUI user directory, available to every workflow and every node.
+
+**Saving.** The **Save the last prompt** button on any writer or rewriter opens a
+box asking for a name, a description and any number of groups — the groups already
+in the file are offered as chips, and a new one is a word and Enter. What gets
+saved is the run itself: the text, the sections after it, the task, the model, the
+ratio, the duration, the seed, and a 50x50 thumbnail of every reference the node
+was shown.
+
+Those thumbnails are taken **during the run**, which is the only moment they can
+be. By the time the box opens the node has returned strings and the tensors are
+gone, so the picture, the first frame of the clip and the measurements are captured
+as the answer is produced and travel with it. What is measured is what genuinely
+exists: an image has a size; a clip that arrived as a real `VIDEO` has frames,
+seconds and a frame rate, while one that arrived as a batch of images has a frame
+count and nothing else, because a batch has no container to ask; a sound has a
+duration, a rate and a channel count. References are labelled by position —
+`ref1-image`, `ref2-audio` — rather than by file name, which a node cannot see
+anyway.
+
+**Using one.** The **Prompt library** button opens the list: this node's own last
+answer first, then everything in the file, newest first. Filter by group with the
+chips, or type in the search box to keep only the records whose name, description,
+prompt, groups, references or settings contain what you typed. **Use** points the
+node at a record; **Copy** puts the prompt on the clipboard without pointing the
+node at anything; **Edit** opens it for changing; **Delete** removes it from the
+file for good, after asking. The list answers the keyboard too: the arrow keys walk
+it without leaving the search box, Enter uses the lit record, and a double click on
+a card does the same. It opens scrolled to the record this node is pointed at.
+
+![The prompt library window, titled “Prompt library” over the line “Hand a saved prompt straight to this node’s output. No model is loaded.”: a search box across the top reading “Search names, descriptions, prompts, references” with the file dropdown beside it on `global`, and four group chips under it — bakery, dinosaur, fish, joke. First the node’s own Last Prompt row, its Use and Copy greyed out beneath “Nothing kept yet. Run this node once and its answer is what gets saved.” Then two saved records: “Дино и пеламида”, three thumbnails down its left and the line Ref2VA · 16:9 · 10s · 3 images + 1 audio · joke, dinosaur, fish above its description and the opening of its subject_definitions; and “Дино”, one thumbnail and the line I2VA · 16:9 · 15s · 1 image · joke, bakery, dinosaur, its card tinted blue because that is the record this node is pointed at. Use, Copy and Delete run down the right of every row, and Write a new one and Close sit at the foot of the window](docs/prompt_library.png)
+
+*Everything on a card is searchable — the name, the description, the prompt, the
+groups, the settings and the references — which is what keeps a file of a hundred
+records usable. The line under the name ends with what the record was written for,
+`3 images + 1 audio`, in the same words the node uses when it warns that what it is
+being shown no longer matches; the thumbnails beside it say which pictures those
+were. The tinted card is the current choice. The Last Prompt row sits above the
+file because it is not in it — it is this session’s own answer, which is why it
+has no **Delete**.*
+
+The library, the editor, the **Model list** and the bundled prompts size like any
+window: drag an edge or a corner, or fill the browser tab with the button in the top
+corner, and each kind remembers its own size. The footer says how many records the
+file holds, or how many a search has left, and what the last edit or delete did.
+
+A chosen prompt reaches `rewritten_prompt` and the section outputs exactly as a
+fresh one would — no model is loaded, nothing is generated, and the run takes about
+a tenth of a second. A record written by another kind of node works too: when the
+classes match the outputs come back verbatim, and otherwise the text is split into
+sections by the node reading it, the same way it splits an answer it wrote itself.
+
+**Editing one.** **Edit** opens the record: its name, its description, its groups,
+and the prompt itself in a box you can write in. What *produced* the record — the
+writer, the settings, the duration, the reference thumbnails — is shown but not
+editable, and does not change. That half is the account of a run, and a card that
+misreported its own provenance would be worse than no card.
+
+The prompt is checked as you type, by the same rules the writers run over a model's
+answer and out of the same module, and against this record's own task, duration and
+references: a cut time that has drifted past the end of the video is named while you
+are still looking at it. That is the reason to edit here rather than in the JSON
+file — the file will take anything.
+
+Escape and **Cancel** ask before they throw away anything typed, here and in the
+other boxes that take typing — **Save the last prompt** and the entry form of the
+**Model list**. With nothing typed they just close.
+
+![The edit window, titled “Edit a saved prompt” over the line “The prompt itself, and what the card says about it. What produced this record -- the writer, the settings, the references -- stays as it was.”: a Name box reading “Дино и пеламида (changed)”, a Description under it, then four group chips with joke, dinosaur and fish lit and bakery not, an empty “New group, then Enter” box, and the prompt itself in a monospaced box open at subject_definitions and summary. Beneath it the self-check — “Self-check: 2 warning(s), 1 note(s)” over two amber lines, one saying &lt;Video 1&gt; is cited but no video reached this node and one saying &lt;Picture 2&gt; and &lt;Picture 3&gt; are connected but never cited, and a grey one saying detailed_description is 147 words where the guide suggests 350-500. At the foot the record’s own account, MiniMaxH3UniversalWriter · Ref2VA · 16:9 · 10s · 3 images + 1 audio · saved 29.08.2026, 15:07:10 · edited 01.09.2026, 11:07:04, with the four reference thumbnails below it, and Cancel and Save changes in the corner](docs/prompt_library_edit.png)
+
+*The findings are read from the record rather than guessed at: the task is Ref2VA, the duration ten seconds, and the references are the four at the foot — which is how it knows that `<Video 1>` is named in a prompt no video ever reached, and that two of the connected pictures are never cited. Amber is a warning, grey a note the guide merely suggests. `self_check` on the Options node governs what the nodes say during a run; the editor always shows both, since you asked for them by opening the box. Everything below the line is the half that cannot be edited.*
+
+Changing the text drops the writer's own split of that answer into fields, because
+the split was made from the text as it was. Without it the node reading the record
+splits the text itself, which is exactly what it already does with a prompt written
+by a different kind of node, so the section outputs stay in step with what you
+wrote. Everything else about the record survives, and its card gains the time of
+the edit beside the time it was saved.
+
+A node already pointed at the record hands on the new text at its next run.
+ComfyUI decides whether to run a node at all from its inputs, and an edit changes
+none of them — the pick is still the same id in the same file — so each writer
+reports the record's own content as its `IS_CHANGED` and the run happens. Nothing
+else about caching moves: with no saved prompt in play the value is constant, and
+a record renamed rather than rewritten does not make every node holding it run
+again.
+
+**A record with references is pinned to them.** A T2VA prompt is self-contained
+and travels anywhere. A prompt for one of the frame tasks or for Ref2VA is not:
+it names its references and describes them — `<Subject 1>` *is* the blue dinosaur
+with the textured scaly skin — so giving that prompt a different set of assets
+hands the generator a description of something that is not in front of it. The
+thumbnails on the card are how you see what a record was written for, and the
+node checks as well: when the kinds and counts of what it is being shown no
+longer match what the record was written for, it says so on the node and in the
+console before handing the prompt on. It says it rather than refusing — reusing a
+description as a template is a legitimate thing to do, and only you know whether
+that is what you meant. What no check can catch is one picture swapped for
+another of the same kind; that is what the thumbnail is for.
+
+**One switch decides, the window decides what.** Choosing a record switches
+`repeat_last` on, because that switch is what hands a kept prompt on at all.
+Turning it off gives the node back to the model and leaves the choice waiting;
+**Write a new one** does both, forgetting the choice as well. The button says which
+it is — `Library: Storm at sea`, or the same with `(repeat_last is off)` after it —
+and the badge beside the node title reads `REPEAT` or `LIBRARY`.
+
+The choice itself lives in a hidden widget, so it is saved with the workflow and
+reaches an API run: a graph reopened tomorrow returns the same prompt. If the
+record has been deleted since, the run stops and says so rather than quietly
+writing a new one — the graph asked for a particular prompt.
+
+**Sets.** `prompt_file` on the Options node names the file the nodes wired to it
+save into and list, `global` unless you say otherwise, and **New prompt file**
+beside it makes another. One file is one working set, which is the cheapest way to
+keep a project's prompts apart from everything else. They live in
+
+```text
+ComfyUI/user/minimax_h3_rewriter/prompts/
+```
+
+as plain JSON, so they can be edited by hand, copied between machines or deleted.
+A record with one thumbnail and a full-length prompt is about 11 KB.
+
 ### The guides are fetched, not bundled
 
 The two guides are not shipped inside this pack. They are MiniMax's
@@ -1159,18 +2742,110 @@ guide is the cheapest way to fit a small model's context.
 
 ### The model list
 
-The **Open model list** button on the rewriter node opens
+The **Model list** button on any model-loading node opens a window over the
+graph: the models that node offers, with **Add a model**, **Edit** and
+**Delete** beside them, and a **Check it** that reads the model before you spend
+a download on it. Everything is kept in
 
 ```text
 ComfyUI/user/minimax_h3_rewriter/models.json
 ```
 
-in your desktop's JSON editor — on the machine running ComfyUI, which is not
-necessarily the one looking at the browser tab. It is seeded from the packaged
-copy on first use, so updating the node pack never overwrites your edits.
+which is seeded from the packaged copy on first use, so updating the node pack
+never overwrites your edits. **Open models.json** in the window's footer still
+opens that file in your desktop's JSON editor — on the machine running ComfyUI,
+which is not necessarily the one looking at the browser tab — for the two things
+the window deliberately leaves alone: the `adapters` sections, and a path to a
+network share.
 
-It holds five lists with the same fields. **`models`** feeds the LoRA rewriter
-and has to be Qwen3.6-27B:
+The window shows only the lists the node it was opened from actually reads,
+because the adapters take different architectures and an entry from one list
+will not load in another's node. The Universal Rewriter therefore opens on three
+tabs and the captioner on one. Under the tabs is what that list requires — the
+architecture, the block count and width, whether a projector is needed and which
+encoders it has to carry — and below the entries, greyed out, the models the pack
+found by itself, in your ComfyUI model folders or in an Ollama store: those are
+offered in the dropdown too, and there is nothing to edit, because they are files
+on disk rather than lines in a file. A file an entry has already downloaded is not
+repeated there: the entry carries an **on disk** tag instead, and the dropdown
+offers that model once, under the entry's name.
+
+![The Model list window over the graph, headed “Model list” above the line “The models this node offers. Entries are kept in models.json in the ComfyUI user directory, so they outlive an update of the pack and are shared by every workflow.” Two tabs, Captioners lit and Guided writers beside it, over what that list requires: GGUF only, one file run by llama.cpp rather than a folder of safetensors; any architecture as long as the file is a language model with an embedded chat template; and a pair — the model and its ‘mmproj’ projector, from the same conversion. Below them two entries badged FROM THE PACK — Qwen2.5-Omni-3B, a 3.4 GB download needing about 5 GB, and Qwen2.5-Omni-7B, 5.8 GB needing about 8 — each showing its format, repository, file and projector in monospace, with Edit and Delete buttons at the right. Under a rule, “Found in your model folders. These are offered too, and there is nothing to edit: they are files on disk, not entries in the file.” heads three unbuttoned rows: on disk: Qwen3VL-8B-Instruct-Q4\_K\_M.gguf [+mmproj, vision, 5.4 GB], and the Omni 3B and 7B pairs, both marked vision and audio](docs/model_list_dialog.png)
+
+*Opened here from a node that reads two lists, so there are two tabs; the
+Universal Rewriter opens on three and the reference captioner on one. What the
+list requires sits above the entries, because it is the reason an entry belongs
+in this list and not another one.*
+
+The footer counts the entries in the open list and says what the last save,
+delete or restore did — including how many nodes in this graph moved to an entry's
+new label, or still hold the name of one that is gone. Those keep the name, so that
+a run says the entry is missing rather than picking another model for them.
+
+**Check it** answers as much as can be answered without moving any weights. A
+file already on this machine is read outright, so it reports the architecture and
+the shape, whether the model carries a chat template, and whether the projector
+carries vision and audio:
+
+```text
+- 'Qwen2.5-Omni-7B-Q4_K_M.gguf' is a 'qwen2vl' model, 28 blocks of width 3584. That fits.
+- It carries its own chat template.
+- 'mmproj-Qwen2.5-Omni-7B-Q8_0.gguf' carries the vision and audio encoder.
+```
+
+The chat template matters more than it looks. The 27B rewriter and the guided
+writers build their prompt from the model's own template, so a GGUF without one —
+typically the base conversion of a model rather than the instruct one — reads as a
+perfectly good model and then stops on the first run. There Check it refuses it,
+and renders the template once on a system and a user turn, so a template this
+pack cannot render is refused too. The captioners and the 8B and Omni rewriters
+leave the template to `llama-mtmd-cli`, which falls back to ChatML without one, so
+there a missing template is only a warning.
+
+Anything only on Hugging Face is asked what its metadata can say: a transformers
+repository is judged from its 4 KB `config.json`, and a GGUF repository is asked
+whether the files you named are in it — which is what catches a typo that would
+otherwise surface as a download failing minutes in, and fills in `download_gb`
+for you while it is there. A GGUF's shape and chat template are in the file
+itself, so for one still on the Hub those wait for the first run — or for Check
+it again once the file is here.
+
+Leave `file` empty and **Check it** answers a different question: what is in that
+repository? It lists the GGUF files as buttons, smallest first. A click puts the
+file into the form, and a name in the style of the packaged entries —
+`Qwen2.5-Omni-7B Q4_K_M` — while you have not typed one of your own. A list that
+runs a pair shows the projectors in a row of their own, for `mmproj`, and fills one
+in by itself when the repository holds only one; once both halves are there the
+check runs and adds up the download. A model split into parts,
+`-00001-of-00003.gguf`, is counted and left out, because an entry names one file
+and only that file is downloaded. A folder on this machine in `repo` is listed the
+same way, and a file name the repository does not have brings up the same buttons.
+
+Two things the window will not do. It refuses a **network path** in `repo`,
+`file` or `mmproj`: it is reachable over the ComfyUI API, which has no CSRF
+token and is routinely served on `--listen`, and merely looking at a UNC path is
+an authentication attempt against the host it names. A path typed into
+`models.json` by hand is still unrestricted — that file does not travel. And it
+refuses to write at all while the file does not parse, since saving over it
+would replace your own entries with the packaged list; it shows the parse error
+and every button that would write is dead, leaving **Open models.json**. What it
+lists in that state is the packaged copy, because that is what the dropdowns are
+offering too until the file parses again.
+
+Editing an entry's download size, VRAM note or note changes what the dropdown
+reads, and saved workflows remember that string — but an entry is found by its
+name, so a workflow holding the old label still runs it and moves to the new one
+when it is opened. Renaming the entry is different, since the name is what it is
+found by: the form says so before it commits, the graph you have open is moved
+across for you, and other workflows lose the choice.
+
+Deleting an entry leaves the nodes that used it as they are: a run stops and says
+the entry is gone, rather than picking another model and starting a download
+nobody asked for. The one exception is an entry whose file is already here —
+its `on disk:` row is back in the dropdown, and the nodes move to it.
+
+The file holds five lists with the same fields. **`models`** feeds the LoRA
+rewriter and has to be Qwen3.6-27B:
 
 ```json
 {
@@ -1273,11 +2948,13 @@ three sections, because both are what people actually type. Two things to watch:
 For a whole folder of GGUFs you keep elsewhere, an entry each is the long way
 round: point ComfyUI's `extra_model_paths.yaml` at it under the key `LLM` and
 every file in it is offered automatically, with `on disk:` in front of the name.
+If that folder comes first, new downloads go into it; a model already in any
+`LLM` folder is found where it is and not fetched again.
 
 Add an entry, **refresh the browser tab** — ComfyUI need not restart — and it is
-in the dropdown. Keep `name` stable: saved workflows remember the label, and a
-node whose stored choice has vanished says so by name instead of silently picking
-something else.
+in the dropdown. Keep `name` stable: it is what a saved workflow finds the entry
+by. A node whose stored choice has vanished stops before anything runs and says
+so by name, instead of silently picking something else.
 
 #### When the list itself is broken
 
@@ -1313,16 +2990,71 @@ names in the pack  −  names in your file  −  names you were already offered
 
 so an entry you deleted stays deleted, one you renamed is not duplicated, and a
 genuinely new one arrives. Deleting a name from `seed_offered` offers that entry
-again on the next start.
+again on the next start, and **Restore the packaged entries** in the model-list
+window is that same edit as a button: it drops the record for one list, and the
+next read brings back every packaged entry the list is missing. Entries you
+wrote yourself are untouched by it.
 
 One exception, once: a file written before this existed has no record of what it
 was offered, so on the first update everything missing comes back — including
 anything you had deleted by hand. The previous file is kept beside it as
-`models.json.bak`, and from then on your deletions stick.
+`models.json.bak`, and from then on your deletions stick. That backup records
+the merge and nothing else: edits you make in the model-list window do not
+spend it, or two clicks would be all it took to lose the copy it exists for.
 
 Merges are logged to the ComfyUI console by name. A file the node cannot parse is
 left exactly as it is and the packaged list is used for that session, so a stray
 comma costs you a restart, not your edits.
+
+### Models you already pulled for Ollama
+
+If you run Ollama, the writers and captioners this pack wants are on your disk
+already, and downloading the same quant a second time would be silly. They are
+offered in the `writer_model` and `caption_model` dropdowns, prefixed `ollama:`
+and named the way `ollama list` names them:
+
+```text
+ollama: qwen3:8b [qwen3, 4.7 GB]
+ollama: moondream:latest [+mmproj, vision, 1.7 GB]
+```
+
+Nothing is copied, converted or downloaded, and Ollama itself does not have to be
+running: what it pulls is a plain GGUF, and llama.cpp reads it where it lies.
+This is the file on disk, not Ollama's API — the server can be stopped, disabled
+or uninstalled and the models stay usable.
+
+A multimodal model appears in both lists: as a writer without its projector, and
+as a captioner with it. The pairing comes out of the model's own manifest, where
+the two files are named together, so it is certain in a way that comparing file
+names in a folder is not.
+
+Three places are looked at, and Ollama's layout is the same on every platform:
+
+```text
+$OLLAMA_MODELS                     # if you set it
+~/.ollama/models                   # the usual install, Windows included
+/usr/share/ollama/.ollama/models   # Linux, installed as a service
+```
+
+A store anywhere else — inside WSL, in a container, on a drive the server knows
+nothing about — is named by hand, in `models.json`
+
+```json
+"ollama_stores": ["\\\\wsl$\\Ubuntu\\usr\\share\\ollama\\.ollama\\models"]
+```
+
+or in `MINIMAX_H3_OLLAMA_MODELS`, which takes several paths separated the way
+`PATH` separates them. Those are not looked for automatically on purpose:
+reaching `\\wsl$\...` **starts a stopped WSL distribution**, and these lists are
+rebuilt every time a dropdown is filled. Opening a ComfyUI tab should not boot a
+virtual machine.
+
+`ollama rm` takes a model out of the dropdowns the way deleting any other file
+does. What your workflow saves is the label rather than the path, so re-pulling
+the same tag leaves it working — the store is content-addressed, and the same
+files land back where they were. The label carries the size, though, and a
+different quantisation is a different size, so re-pulling `qwen3:8b` at another
+quant comes back as a choice you have to pick again.
 
 ## Where the weights go
 
@@ -1347,8 +3079,9 @@ directly (an absolute path is accepted) and nothing is fetched again.
 52 GB is a lot to ask, so the node looks for the base model before offering to
 download it. The `model` dropdown lists every Qwen3.6-27B found in
 
-- all directories ComfyUI registers for `LLM`, `transformers` and `diffusers`
-  — including anything mapped in through `extra_model_paths.yaml`, and
+- all directories ComfyUI registers for `LLM`, `transformers`, `diffusers`,
+  `text_encoders` and `clip` — including anything mapped in through
+  `extra_model_paths.yaml`, and
 - the Hugging Face cache (`HF_HOME` / `HF_HUB_CACHE` / `~/.cache/huggingface/hub`),
 
 so a copy pulled earlier by any other tool is reused instead of downloaded twice.
@@ -1546,6 +3279,17 @@ the CUDA figure.
 > [writer nodes](#minimax-h3-prompt-writer-t2vai2vafl2val2va) do on purpose, with
 > the full guide in the prompt instead of seven lines.
 
+> **Neither is a later Qwen.** Qwen3.8-27B is `qwen35` with the same 64 blocks of
+> width 5120, so the shape check passes it and llama.cpp attaches the LoRA
+> without complaint — to weights it was never trained on. The adapter was
+> trained on [Qwen3.6-27B](https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA)
+> and nothing else. The node reads the names a GGUF gives itself and warns, on
+> the node and in Check it, when none of them is Qwen3.6-27B. It does not
+> refuse, because those names are optional and written by whoever quantised the
+> file. An **MTP build** of Qwen3.6-27B is fine: it reports 65 blocks because it
+> carries a draft head for speculative decoding, and the node counts the head
+> out — llama.cpp never loads it here, and the adapter has nothing for it.
+
 The GGUF route uses a **converted** adapter, not the PEFT one — F16 and Q8_0 of
 [the 27B LoRA](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-GGUF) and of
 [the 8B one](https://huggingface.co/pytraveler/MiniMax-H3-Prompt-Rewriter-LoRA-8B-GGUF). It is fetched
@@ -1572,6 +3316,45 @@ so nothing breaks when the ComfyUI frontend updates.
 |---|---|
 | `HF_TOKEN` | Access token for gated or private repositories |
 | `HF_ENDPOINT` | Mirror to download from instead of `huggingface.co` |
+| `MINIMAX_H3_LLAMA_BIN` | An llama.cpp already on this machine: the executable, or the folder holding it |
+| `MINIMAX_H3_MTMD_SERVER` | `auto`, `never` or `always`: whether a caption run holds one model open instead of loading it per reference |
+
+### Languages
+
+Set ComfyUI to Russian (Settings → Comfy → Locale) and the nodes come up in
+Russian: what each node is, and every widget's tooltip — the long explanations
+are the point of the translation, since they are what you actually read.
+
+**Widget names stay English on purpose.** `repeat_last`, `fix_once`,
+`prompt_file` are identifiers, not prose: they are the keys in the workflow
+JSON and in an API call, they are what this README and the issue tracker call
+things, and the tooltips name widgets by them. Translating the label would
+leave every one of those references pointing at nothing, so a Russian tooltip
+can say `repeat_last` and it matches what is written on the node.
+
+One tooltip is left in English deliberately — `device` on the Options node,
+which is built at run time and ends with the machine's own GPU list. A static
+file cannot carry that without shipping one person's hardware to everyone.
+
+Translations live in `locales/<lang>/nodeDefs.json` at the root of the pack,
+which is where ComfyUI looks. Adding a language is adding a folder; nothing in
+the Python needs to know. Two things help keep one honest:
+
+```text
+python tools/locales.py report ru     what is missing, and what has gone stale
+python tools/locales.py fill ru       add the missing keys, in English, to translate over
+```
+
+`report` asks a running ComfyUI what the nodes actually are, so it cannot drift
+from the code the way a checked-in copy would; `fill` never overwrites a key
+that already has a translation. The test suite covers the rest — that a file is
+valid JSON, that it names only this pack's nodes, and that every key is one
+ComfyUI actually reads, since a misspelled key fails silently and simply never
+appears.
+
+**A node already on the canvas keeps the title it was created with.** Switching
+language does not rename it, because that title is saved in the workflow. Add
+the node afresh to see the translated name.
 
 ## Notes
 
@@ -1631,6 +3414,9 @@ maintained.
 | Video/audio generator | [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) |
 | Prompt-writing guides | [MiniMaxAI/MiniMax-H3 `docs/`](https://huggingface.co/MiniMaxAI/MiniMax-H3/tree/main/docs) — fetched at run time, see above |
 | Inference framework | [ModelTC/LightX2V](https://github.com/ModelTC/LightX2V) |
+| Bundled prompts, and the clips they describe | [ostris/minimax_h3_1k](https://huggingface.co/datasets/ostris/minimax_h3_1k) — used with the author's permission; the prompts are effectively MIT, the clips and the frames cut from them are MiniMax-H3 output and may not be used to train models |
+| Shooting-style and subject tags for them | [H3 Atlas](https://cohub.live/baize/video-altas/w/h3-atlas) |
+| RefMod format, and how its references are presented | [ComfyUI-MiniMaxH3Mod](https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod) by Luisa (luisacaotica), MIT; the pictures stored for the text encoder, and the every-fourth-photo default, from [ComfyUI-Fantastic-MiniMaxH3-PromptBuilder](https://github.com/Adudeguyman/ComfyUI-Fantastic-MiniMaxH3-PromptBuilder). Read by this pack's own code, none of theirs copied |
 
 The prompt templates in `minimax_h3_rewriter/prompt_template.py` and
 `prompt_template_8b.py` are reproduced byte-for-byte from their adapter
@@ -1638,6 +3424,16 @@ repositories; changing them degrades the rewrite.
 
 Use of MiniMax-H3 is governed by the licence and acceptable-use terms in the
 [official MiniMax-H3 repository](https://huggingface.co/MiniMaxAI/MiniMax-H3).
+
+Thanks to [AxiomGraph](https://www.youtube.com/@AxiomGraph) for the first video
+review of these nodes —
+[«Stop Struggling With MiniMax H3 Prompts. Do This Instead.»](https://www.youtube.com/watch?v=h3rZTIRB_G8) —
+and for the community workflows linked above.
+
+Thanks to [ЭйАй Генератьон](https://www.youtube.com/@AyiTheDeer) for a second and more detailed one, in
+Russian, which places these nodes among the other MiniMax-H3 packs rather than
+on their own —
+[«MiniMax H3 - как создать непрерывное длинное видео. Обзор наборов нод для ComfyUI + рерайтер промта»](https://www.youtube.com/watch?v=PZd9fWX15VA).
 
 ## Licence
 

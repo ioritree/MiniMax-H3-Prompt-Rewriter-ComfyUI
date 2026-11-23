@@ -1,11 +1,15 @@
 [project]
 name = "minimax-h3-prompt-rewriter"
-version = "0.17.0"
-description = "ComfyUI nodes that rewrite a short prompt into a structured MiniMax-H3 audio-video description, fully local: the LightX2V Prompt Rewriter LoRAs on Qwen3.6-27B or on multimodal Qwen3-VL-8B, which reads the reference frames itself, or MiniMax's own writing guide on any small GGUF for T2VA, I2VA, FL2VA, L2VA and Ref2VA, with a multimodal captioner for the reference assets - or one universal node that describes the references and writes the prompt together, with their order a widget."
+version = "0.36.0"
+description = "ComfyUI prompt writers and rewriters for MiniMax-H3, MiniMax-H3-Image and P-H3. Supports local Qwen SFT/GGUF, LoRAs, API providers, ordered references, RefMods and reusable system prompts."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
+    "requests>=2.32.5",
+    "aiohttp>=3.13.5",
+    "av>=14.0",
+    "cryptography>=50.0.2",
     "transformers>=4.57.1",
     "peft>=0.17",
     "accelerate>=1.10",

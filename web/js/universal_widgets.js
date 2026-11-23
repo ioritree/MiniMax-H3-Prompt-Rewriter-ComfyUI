@@ -1,9 +1,12 @@
 import { app } from "../../scripts/app.js";
+import { applyDurationCeiling } from "./duration_limit.js";
+import { previewFor, releasePreviews } from "./reference_previews.js";
 import { addSlotSwitches } from "./slot_switches.js";
 import {
     chipElement,
     installStripStyle,
     instructionBand,
+    numberEntries,
     placeDragged,
     readInstructions,
     slotNumber,
@@ -16,6 +19,7 @@ import {
     installBaseStyle,
     installStyle,
     onRefresh,
+    ratiosHeight,
     renderRatios,
     renderSegments,
     replaceWithDom,
@@ -33,7 +37,6 @@ const LAYOUT = "reference_layout";
 const INSTRUCTIONS = "reference_instructions";
 const TASK = "task";
 const RESOLUTION = "resolution";
-const DURATION = "duration";
 
 const PREFIX = "ref_";
 const REF_TASK = "Ref2VA";
@@ -41,22 +44,17 @@ const TEXT_TASK = "T2VA";
 
 const PICTURES_FOR_TASK = { I2VA: 1, FL2VA: 2, L2VA: 1 };
 
-const DURATION_PROPERTY = "max_duration";
-const DURATION_PROPERTY_DEFAULT = 30;
-const DURATION_MIN = 0.1;
-const DURATION_CEILING = 600;
-
 const IMAGE_ROLES = ["Picture", "Subject", "Video"];
+const REFMOD_ROLES = ["Picture", "Subject"];
 
 const HINT_H = 12;
 const HINT_GAP = 3;
 const HINT_IMAGES =
-    "drag to reorder - click the label to change it - click below to switch off - 'instr' asks, right-click clears";
+    "drag to reorder - click the label to change it (a clip's: its sound) - click below to switch off - 'instr' asks, right-click clears";
 const HINT_PLAIN =
     "drag to reorder - click a square below its label to switch it off - 'instr' asks, right-click clears";
 
 const TASKS_H = 26;
-const RATIOS_H = 38;
 
 const DRAG_SLOP = 6;
 
@@ -88,6 +86,7 @@ function readLayout(node) {
         order: names("order"),
         off: names("off"),
         roles: parsed.roles && typeof parsed.roles === "object" ? { ...parsed.roles } : {},
+        sound: names("sound"),
     };
 }
 
@@ -104,6 +103,11 @@ function writeLayout(node, layout) {
         if (IMAGE_ROLES.includes(role) && role !== IMAGE_ROLES[0]) roles[name] = role;
     }
     if (Object.keys(roles).length) kept.roles = roles;
+    const notClips = new Set(
+        slots(node).filter((s) => s.connected && s.kind !== "video").map((s) => s.name)
+    );
+    const sound = (layout.sound || []).filter((name) => !notClips.has(name));
+    if (sound.length) kept.sound = sound;
 
     const widget = widgetNamed(node, LAYOUT);
     if (widget) widget.value = JSON.stringify(kept);
@@ -128,18 +132,19 @@ function arranged(node) {
             .sort((a, b) => slotNumber(a) - slotNumber(b))
     );
 
-    const counts = {};
-    return names.map((name) => {
+    const entries = names.map((name) => {
         const slot = connected.get(name);
+        const roles = slot.refmod ? REFMOD_ROLES : IMAGE_ROLES;
         let role = "Audio";
         if (slot.kind === "video") role = "Video";
         else if (slot.kind === "image") {
-            role = IMAGE_ROLES.includes(layout.roles[name]) ? layout.roles[name] : IMAGE_ROLES[0];
+            role = roles.includes(layout.roles[name]) ? layout.roles[name] : roles[0];
         }
         const on = !layout.off.includes(name);
-        if (on) counts[role] = (counts[role] || 0) + 1;
-        return { name, kind: slot.kind, role, on, number: on ? counts[role] : null };
+        const sound = on && slot.kind === "video" && !slot.refmod && layout.sound.includes(name);
+        return { name, kind: slot.kind, role, on, sound, refmod: slot.refmod };
     });
+    return numberEntries(entries, widgetNamed(node, TASK)?.value === REF_TASK);
 }
 
 function anyEnabled(node) {
@@ -187,10 +192,10 @@ function commitOrder(node, strip) {
     writeLayout(node, layout);
 }
 
-function cycleRole(node, name) {
+function cycleRole(node, name, roles = IMAGE_ROLES) {
     const layout = readLayout(node);
-    const current = Math.max(0, IMAGE_ROLES.indexOf(layout.roles[name]));
-    layout.roles[name] = IMAGE_ROLES[(current + 1) % IMAGE_ROLES.length];
+    const current = Math.max(0, roles.indexOf(layout.roles[name]));
+    layout.roles[name] = roles[(current + 1) % roles.length];
     writeLayout(node, layout);
 }
 
@@ -199,6 +204,14 @@ function toggleSlot(node, name) {
     const at = layout.off.indexOf(name);
     if (at >= 0) layout.off.splice(at, 1);
     else layout.off.push(name);
+    writeLayout(node, layout);
+}
+
+function toggleSound(node, name) {
+    const layout = readLayout(node);
+    const at = layout.sound.indexOf(name);
+    if (at >= 0) layout.sound.splice(at, 1);
+    else layout.sound.push(name);
     writeLayout(node, layout);
 }
 
@@ -235,28 +248,45 @@ function beginGesture(node, chip, role, entry, event) {
         if (node[STATE]) node[STATE].dragging = false;
 
         if (dragging) commitOrder(node, strip);
-        else if (onLabel && entry.kind === "image") cycleRole(node, entry.name);
-        else toggleSlot(node, entry.name);
+        else if (onLabel && entry.kind === "image") {
+            cycleRole(node, entry.name, entry.refmod ? REFMOD_ROLES : IMAGE_ROLES);
+        } else if (onLabel && entry.kind === "video" && entry.on && !entry.refmod) {
+            toggleSound(node, entry.name);
+        } else toggleSlot(node, entry.name);
     };
 
-    // Bound to the window, with no pointer capture: moving the chip in the DOM
-    // is what a live reorder does, and that releases capture mid-gesture.
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
     window.addEventListener("pointercancel", finish);
 }
 
 function buildChip(node, entry) {
-    const { chip, role } = chipElement(entry);
+    const { chip, role, about } = chipElement(
+        entry, false, previewFor(node, entry.name, entry.kind)
+    );
     chip.appendChild(instructionBand(entry.name, entry.role, instructions(node)));
 
-    const relabel =
-        entry.kind === "image"
-            ? "click the dark label band to call it a subject or a clip instead, "
-            : "";
+    let relabel = "";
+    if (entry.kind === "image" && entry.refmod) {
+        relabel = "click the dark label band to call it a subject instead, ";
+    } else if (entry.kind === "image") {
+        relabel = "click the dark label band to call it a subject or a clip instead, ";
+    } else if (entry.kind === "video" && !entry.refmod) {
+        relabel = entry.sound
+            ? "click the label band to stop counting its own sound, "
+            : "click the label band to count its own sound as a reference too, ";
+    }
+    let heard = "";
+    if (entry.sound) {
+        heard = entry.soundNumber
+            ? `, its sound audio ${entry.soundNumber}`
+            : ", its sound switched on (counted on Ref2VA only)";
+    }
     chip.title =
         `${entry.name}: ${entry.role.toLowerCase()}` +
-        (entry.on ? ` ${entry.number}` : ", switched off") +
+        (entry.on ? ` ${entry.number}${heard}` : ", switched off") +
+        (entry.refmod ? `\nRefMod '${entry.refmod.name}', its ${entry.refmod.channel} output` : "") +
+        (about ? `\n${about}` : "") +
         `\nDrag to reorder, ${relabel}click below the label to switch it off.`;
 
     chip.addEventListener("pointerdown", (event) => beginGesture(node, chip, role, entry, event));
@@ -271,6 +301,7 @@ function renderStrip(node) {
     node[STATE].chipCount = entries.length;
     const hint = node[STATE].hint;
 
+    releasePreviews(strip);
     strip.replaceChildren();
     if (!entries.length) {
         const note = document.createElement("span");
@@ -283,7 +314,7 @@ function renderStrip(node) {
     for (const entry of entries) strip.appendChild(buildChip(node, entry));
 
     if (hint) {
-        hint.textContent = entries.some((entry) => entry.kind === "image")
+        hint.textContent = entries.some((entry) => entry.kind === "image" || entry.kind === "video")
             ? HINT_IMAGES
             : HINT_PLAIN;
     }
@@ -308,19 +339,6 @@ function renderTasks(node) {
             };
         })
     );
-}
-
-
-function applyDurationCeiling(node) {
-    const widget = widgetNamed(node, DURATION);
-    if (!widget?.options) return;
-
-    let ceiling = Number(node.properties?.[DURATION_PROPERTY]);
-    if (!isFinite(ceiling) || ceiling <= DURATION_MIN) ceiling = DURATION_PROPERTY_DEFAULT;
-    ceiling = Math.min(Math.round(ceiling * 10) / 10, DURATION_CEILING);
-
-    widget.options.max = ceiling;
-    if (Number(widget.value) > ceiling) widget.value = ceiling;
 }
 
 
@@ -358,26 +376,13 @@ function build(node) {
 
     replaceWithDom(node, LAYOUT, "minimaxh3_references", references, () => stripHeight(node));
     replaceWithDom(node, TASK, "minimaxh3_task", tasks, () => TASKS_H);
-    replaceWithDom(node, RESOLUTION, "minimaxh3_ratio", ratios, () => RATIOS_H);
+    replaceWithDom(node, RESOLUTION, "minimaxh3_ratio", ratios, () => ratiosHeight(node, RESOLUTION));
 
-    if (node.properties?.[DURATION_PROPERTY] === undefined) {
-        node.addProperty?.(DURATION_PROPERTY, DURATION_PROPERTY_DEFAULT, "number");
-    }
     redraw(node);
 }
 
 function addControls(nodeType) {
     repaintOn(nodeType, build);
-
-    const onPropertyChanged = nodeType.prototype.onPropertyChanged;
-    nodeType.prototype.onPropertyChanged = function (name) {
-        const result = onPropertyChanged?.apply(this, arguments);
-        if (name === DURATION_PROPERTY) {
-            applyDurationCeiling(this);
-            this.setDirtyCanvas?.(true, true);
-        }
-        return result;
-    };
 
     addSlotSwitches(nodeType, {
         prefixes: [PREFIX],

@@ -29,7 +29,6 @@ import wave
 
 log = logging.getLogger(__name__)
 
-#: Frames taken from an IMAGE batch when it is longer than one.
 DEFAULT_MAX_FRAMES = 8
 
 VIDEO_SUFFIX = ".mp4"
@@ -181,6 +180,9 @@ def _audio_parts(audio) -> tuple[object, object]:
     return getattr(audio, "waveform", None), getattr(audio, "sample_rate", None)
 
 
+audio_parts = _audio_parts
+
+
 def audio_file(audio, workspace: Workspace, name: str = "audio.wav") -> str:
     """Write a ComfyUI AUDIO input out as 16-bit PCM WAV. Returns the path."""
     numpy = _numpy()
@@ -195,15 +197,13 @@ def audio_file(audio, workspace: Workspace, name: str = "audio.wav") -> str:
     rate = int(sample_rate or 44100)
 
     array = waveform.detach().cpu().numpy() if hasattr(waveform, "detach") else numpy.asarray(waveform)
-    if array.ndim == 3:  # (batch, channels, samples) -- only the first clip is described
+    if array.ndim == 3:
         array = array[0]
     if array.ndim == 1:
         array = array[None, :]
     if array.ndim != 2:
         raise ValueError(f"expected an AUDIO waveform of shape (channels, samples), got {array.shape}")
 
-    # (channels, samples) -> interleaved (samples, channels), which is what a WAV
-    # frame actually is.
     interleaved = numpy.ascontiguousarray(array.T)
     clipped = numpy.clip(interleaved, -1.0, 1.0)
     pcm = (clipped * 32767.0).astype("<i2")
@@ -294,11 +294,16 @@ def _by_seeking(container, stream, wanted: list[int], total: int):
             break
 
 
-def _save(frames, workspace: Workspace, max_pixels: int = 0) -> list[str]:
-    """Write frames out as PNGs one at a time, so no batch is ever held in memory."""
+def _save(frames, workspace: Workspace, max_pixels: int = 0, prefix: str = "frame") -> list[str]:
+    """Write frames out as PNGs one at a time, so no batch is ever held in memory.
+
+    ``prefix`` keeps two clips sampled into one workspace apart. Without it the
+    second clip's frames are written over the first's, and a turn that names
+    both shows the model the second one twice.
+    """
     paths = []
     for position, frame in enumerate(frames):
-        path = workspace.file(f"frame_{position:03d}.png")
+        path = workspace.file(f"{prefix}_{position:03d}.png")
         fit_pixels(frame.to_image(), max_pixels).save(path, format="PNG")
         paths.append(path)
     return paths
@@ -327,7 +332,44 @@ def _empty(result) -> bool:
     return result is None or len(result) == 0
 
 
-def _collect(video, workspace: Workspace, max_frames: int, sink, max_pixels: int = 0):
+def clip_window(
+    total: int,
+    rate: float,
+    start: float = 0.0,
+    trimmed: float = 0.0,
+    max_seconds: float = 0.0,
+) -> tuple[int, int]:
+    """Which frames of a clip are read, as ``(first, count)``.
+
+    Two things narrow a clip before it is sampled. A trimmed VIDEO is read over
+    its trim, which is how ``reference_clip`` hands it to the generator. And the
+    generator keeps no more of a reference clip than the video it is making --
+    MiniMaxH3ReferenceToVideo cuts the frames at the target's length, and
+    LightX2V's runner does the same -- so ``max_seconds``, the target's length,
+    is where a description should stop as well. Past it are frames H3 never
+    sees, and a description of them is a promise the video will not keep.
+
+    A clip whose frame count or rate is unknown is read as it always was: from
+    the start, over whatever there is.
+    """
+    if total <= 0 or rate <= 0:
+        return 0, max(int(total), 0)
+    first = min(total - 1, max(0, int(round(start * rate))))
+    count = total - first
+    for limit in (trimmed, max_seconds):
+        if limit > 0:
+            count = min(count, max(1, int(round(limit * rate))))
+    return first, count
+
+
+def _collect(
+    video,
+    workspace: Workspace,
+    max_frames: int,
+    sink,
+    max_pixels: int = 0,
+    max_seconds: float = 0.0,
+):
     """Decode the sampled frames of a VIDEO and hand them to ``sink``.
 
     Both routes share this, so a clip is described from exactly the same frames
@@ -335,19 +377,30 @@ def _collect(video, workspace: Workspace, max_frames: int, sink, max_pixels: int
     The sink is given an iterator rather than a list, which is what lets the PNG
     path avoid holding a whole batch at once.
 
-    Returns ``(whatever the sink returned, total frames, seconds)``.
+    The frames are spread over :func:`clip_window`'s stretch rather than the
+    whole file: a trim is honoured always, and ``max_seconds`` when it is given.
+
+    Returns ``(whatever the sink returned, frames in that stretch, its seconds)``.
     """
     import av
 
     source = _video_source(video, workspace)
     result = None
+    start, trimmed = trim_window(video)
 
     with av.open(source) as container:
         stream = container.streams.video[0]
         stream.thread_type = "AUTO"
         total = _frame_count(stream)
         seconds = float(container.duration / av.time_base) if container.duration else 0.0
-        wanted = frame_indices(total, max_frames) if total else list(range(max(max_frames, 1)))
+        rate = float(stream.average_rate or 0)
+        first, count = clip_window(total, rate, start, trimmed, max_seconds)
+        if total and (first or count < total):
+            seconds = count / rate
+        wanted = (
+            [first + index for index in frame_indices(count, max_frames)]
+            if total else list(range(max(max_frames, 1)))
+        )
 
         if total > SEEK_ABOVE_FRAMES and stream.duration:
             try:
@@ -364,7 +417,7 @@ def _collect(video, workspace: Workspace, max_frames: int, sink, max_pixels: int
         if _empty(result):
             result = sink(_in_order(container, stream, wanted), workspace, max_pixels)
 
-    return result, total, seconds
+    return result, count, seconds
 
 
 def video_frames(
@@ -372,6 +425,8 @@ def video_frames(
     workspace: Workspace,
     max_frames: int = DEFAULT_MAX_FRAMES,
     max_pixels: int = 0,
+    max_seconds: float = 0.0,
+    prefix: str = "frame",
 ) -> tuple[list[str], int, float]:
     """Sample a VIDEO input into PNGs. Returns ``(paths, total frames, seconds)``.
 
@@ -388,14 +443,29 @@ def video_frames(
     - ``--video`` takes every frame. Two seconds at 25 fps is 56 images through
       the vision tower; a thirty-second clip is 750. ``max_frames`` exists so
       the cost of describing a clip does not depend on how long it is.
+
+    ``max_seconds`` is the length of the video the clip is a reference for; see
+    :func:`clip_window`. 0 reads the clip to its end. ``prefix`` names the
+    files, for a caller sampling several clips into one workspace.
     """
-    paths, total, seconds = _collect(video, workspace, max_frames, _save, max_pixels)
+
+    def save(frames, workspace, max_pixels=0):
+        return _save(frames, workspace, max_pixels, prefix)
+
+    paths, total, seconds = _collect(
+        video, workspace, max_frames, save, max_pixels, max_seconds
+    )
     if _empty(paths):
         raise RuntimeError("no frames could be decoded from the VIDEO input")
     return paths, max(total, len(paths)), seconds
 
 
-def video_tensor(video, workspace: Workspace, max_frames: int = DEFAULT_MAX_FRAMES):
+def video_tensor(
+    video,
+    workspace: Workspace,
+    max_frames: int = DEFAULT_MAX_FRAMES,
+    max_seconds: float = 0.0,
+):
     """Sample a VIDEO input straight into an IMAGE batch. Returns ``(batch, total, seconds)``.
 
     The same frames :func:`video_frames` would have written out, kept in memory
@@ -404,7 +474,253 @@ def video_tensor(video, workspace: Workspace, max_frames: int = DEFAULT_MAX_FRAM
     are taken is shared, which is what makes a clip described through either
     route describable from the same evidence.
     """
-    batch, total, seconds = _collect(video, workspace, max_frames, _stack)
+    batch, total, seconds = _collect(video, workspace, max_frames, _stack, 0, max_seconds)
     if _empty(batch):
         raise RuntimeError("no frames could be decoded from the VIDEO input")
     return batch, max(total, len(batch)), seconds
+
+
+REFERENCE_FPS = 24
+REFERENCE_MAX_SECONDS = 15.0
+
+CANVAS_SHORT_EDGE = 768
+CANVAS_MAX_PIXELS = 768 * 1344
+CANVAS_MULTIPLE = 32
+
+
+def _canvas(width: int, height: int) -> tuple[int, int]:
+    """MiniMaxH3ReferenceToVideo's ``adapt_canvas``, repeated rather than imported."""
+    ratio = width / max(height, 1)
+    if ratio >= 1.0:
+        nominal_w, nominal_h = CANVAS_SHORT_EDGE * ratio, float(CANVAS_SHORT_EDGE)
+    else:
+        nominal_w, nominal_h = float(CANVAS_SHORT_EDGE), CANVAS_SHORT_EDGE / ratio
+    if nominal_w * nominal_h > CANVAS_MAX_PIXELS:
+        scale = math.sqrt(CANVAS_MAX_PIXELS / (nominal_w * nominal_h))
+        nominal_w, nominal_h = nominal_w * scale, nominal_h * scale
+    return (
+        max(CANVAS_MULTIPLE, round(nominal_w / CANVAS_MULTIPLE) * CANVAS_MULTIPLE),
+        max(CANVAS_MULTIPLE, round(nominal_h / CANVAS_MULTIPLE) * CANVAS_MULTIPLE),
+    )
+
+
+def reference_canvas(width: int, height: int) -> tuple[int, int]:
+    """The size MiniMaxH3ReferenceToVideo scales a reference clip to, or the clip's own.
+
+    Its arithmetic: a 768 short edge, the area capped at 768x1344, both sides on
+    a 32 grid -- and a clip already smaller than that is left as it is. Scaling
+    to the size the node would pick means its own resize lands on the size it
+    already has, and fifteen seconds of 1080p cost half the memory on the way.
+
+    That only holds where the canvas maps onto itself. For a very tall or very
+    wide shape it does not: rounding moves the ratio, and the node would pick a
+    canvas 32 pixels shorter and resize a second time. Those clips keep their
+    own size and are scaled once, by the node, exactly as it would have.
+    """
+    width, height = int(width), int(height)
+    canvas = _canvas(width, height)
+    if width * height < canvas[0] * canvas[1] or _canvas(*canvas) != canvas:
+        return width, height
+    return canvas
+
+
+def at_rate(frames, fps: int, limit: int):
+    """Frames on a fixed clock: for each tick, the latest frame showing by then.
+
+    ``frames`` is ``(seconds, frame)`` in decode order, timed from the first of
+    them. A 30 fps clip loses one frame in five on the way to 24, and a 12 fps
+    one shows every frame twice -- which is what playing it at 24 would show,
+    and what "frames at 24 fps" means to the node that reads them. The last
+    frame is held for as long as the source showed it, and nothing past
+    ``limit`` ticks is asked of the decoder at all.
+    """
+    held = None
+    origin = last = None
+    interval = 1.0 / fps
+    emitted = 0
+    for seconds, frame in frames:
+        if origin is None:
+            origin = seconds
+        at = seconds - origin
+        while held is not None and emitted < limit and emitted / fps < at - 1e-9:
+            yield held
+            emitted += 1
+        if emitted >= limit:
+            return
+        if last is not None and at > last:
+            interval = at - last
+        held, last = frame, at
+    if held is None:
+        return
+    while emitted < limit and emitted / fps < last + interval - 1e-9:
+        yield held
+        emitted += 1
+
+
+def trim_window(video) -> tuple[float, float]:
+    """``(start, duration)`` of a trimmed VIDEO in seconds, ``(0, 0)`` for one that is not.
+
+    Newer ComfyUI VIDEO objects carry a trim instead of cutting the file, and
+    reading the file itself would quietly hand on the part that was trimmed
+    away. Older ones have no such method, which is the same as no trim.
+    """
+    window = getattr(video, "get_active_trim_window", None)
+    if not callable(window):
+        return 0.0, 0.0
+    try:
+        start, duration = window()
+        return max(0.0, float(start or 0.0)), max(0.0, float(duration or 0.0))
+    except Exception:
+        log.debug("[minimax_h3_rewriter.media.trim_window] unreadable trim", exc_info=True)
+        return 0.0, 0.0
+
+
+def frame_size(value) -> tuple[int, int] | None:
+    """``(width, height)`` of a picture, a frame batch or a VIDEO, or None if unknown.
+
+    An IMAGE says it in its shape. A VIDEO is asked through
+    ``get_dimensions``, which on a file reads the header and decodes nothing.
+    Anything that cannot answer is None rather than an error: the callers only
+    want the size to say something about it.
+    """
+    shape = getattr(value, "shape", None)
+    if shape is not None:
+        try:
+            if len(shape) >= 3:
+                return int(shape[-2]), int(shape[-3])
+        except TypeError:
+            return None
+        return None
+    dimensions = getattr(value, "get_dimensions", None)
+    if not callable(dimensions):
+        return None
+    try:
+        width, height = dimensions()
+        return int(width), int(height)
+    except Exception:
+        log.debug("[minimax_h3_rewriter.media.frame_size] unreadable size", exc_info=True)
+        return None
+
+
+def _soundtrack(source, start: float, seconds: float):
+    """The sound under one stretch of a clip, as a ComfyUI AUDIO -- or None when it has none."""
+    import av
+    import torch
+    from av.audio.resampler import AudioResampler
+
+    numpy = _numpy()
+
+    if hasattr(source, "seek"):
+        source.seek(0)
+    chunks = []
+    with av.open(source) as container:
+        streams = [stream for stream in container.streams.audio if stream.codec_context is not None]
+        if not streams:
+            return None
+        stream = streams[-1]
+        resampler = AudioResampler(format="fltp")
+        rate = int(stream.sample_rate or 0)
+        skip = wanted = None
+        taken = 0
+        for frame in container.decode(stream):
+            if wanted is None:
+                rate = rate or int(frame.sample_rate)
+                begin = float(frame.time) if frame.time is not None else 0.0
+                skip = max(0, int(round((start - begin) * rate)))
+                wanted = max(1, int(round(seconds * rate)))
+            for out in resampler.resample(frame):
+                data = out.to_ndarray()
+                if skip:
+                    cut = min(skip, data.shape[-1])
+                    data = data[..., cut:]
+                    skip -= cut
+                if data.shape[-1]:
+                    chunks.append(data)
+                    taken += data.shape[-1]
+            if taken >= wanted:
+                break
+    if not chunks:
+        return None
+    data = numpy.ascontiguousarray(numpy.concatenate(chunks, axis=-1)[..., :wanted])
+    return {"waveform": torch.from_numpy(data).unsqueeze(0), "sample_rate": rate}
+
+
+def reference_clip(
+    video,
+    workspace: Workspace,
+    soundtrack: bool = False,
+    fps: int = REFERENCE_FPS,
+    max_seconds: float = REFERENCE_MAX_SECONDS,
+):
+    """A VIDEO as MiniMaxH3ReferenceToVideo takes a reference clip. Returns ``(frames, sound, seconds)``.
+
+    ``frames`` is an IMAGE batch at ``fps`` on that node's canvas; ``sound`` is
+    the clip's audio over the same stretch, or None when it was not asked for or
+    there is none. A trimmed VIDEO is read over its trim.
+
+    Every frame goes from the decoder into the batch one at a time, and a clip
+    running past ``max_seconds`` is cut there: the node reads no more than that,
+    and decoding the rest would be memory spent on frames nobody sees.
+    """
+    import av
+    import torch
+    from PIL import Image
+
+    numpy = _numpy()
+
+    start, duration = trim_window(video)
+    seconds_cap = min(max_seconds, duration) if duration else max_seconds
+    limit = max(1, int(round(seconds_cap * fps)))
+    source = _video_source(video, workspace)
+
+    batch = []
+    with av.open(source) as container:
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        rate = float(stream.average_rate or fps)
+
+        def timed():
+            for position, frame in enumerate(container.decode(stream)):
+                seconds = float(frame.time) if frame.time is not None else position / rate
+                if seconds + 1e-9 >= start:
+                    yield seconds, frame
+
+        size = None
+        shown = tensor = None
+        for frame in at_rate(timed(), fps, limit):
+            if frame is not shown:
+                image = frame.to_image()
+                if size is None:
+                    size = reference_canvas(image.width, image.height)
+                if image.size != size:
+                    image = image.resize(size, Image.LANCZOS)
+                tensor = torch.from_numpy(numpy.asarray(image, dtype=numpy.float32) / 255.0)
+                shown = frame
+            batch.append(tensor)
+
+    if not batch:
+        raise RuntimeError("no frames could be decoded from the VIDEO input")
+    seconds = len(batch) / float(fps)
+    sound = _soundtrack(source, start, seconds) if soundtrack else None
+    return torch.stack(batch), sound, seconds
+
+
+def clip_soundtrack(video, workspace: Workspace, max_seconds: float = REFERENCE_MAX_SECONDS):
+    """A clip's own sound as a ComfyUI AUDIO, or None when the clip has none.
+
+    The stretch :func:`reference_clip` hands the generator with it: from the
+    trim's start, for the trim or for ``max_seconds``, whichever ends first.
+    No frame is decoded for it, so a writer can describe the sound a clip will
+    carry, and know whether it carries one at all, before deciding what to
+    number.
+    """
+    start, duration = trim_window(video)
+    seconds = min(max_seconds, duration) if duration else max_seconds
+    try:
+        return _soundtrack(_video_source(video, workspace), start, seconds)
+    except Exception:
+        log.warning(
+            "[minimax_h3_rewriter.media.clip_soundtrack] the sound could not be read",
+            exc_info=True,
+        )
+        return None

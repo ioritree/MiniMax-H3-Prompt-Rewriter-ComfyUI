@@ -1,9 +1,10 @@
-"""ComfyUI entry point for the MiniMax-H3 T2VA prompt rewriter."""
+"""ComfyUI prompt writers, rewriters and reference tools for MiniMax-H3 and P-H3."""
 
 import importlib
 import logging
 
 from .minimax_h3_rewriter import routes as _routes  # registers HTTP routes
+from .minimax_h3_rewriter import resident as _resident
 from .minimax_h3_rewriter.nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 from .minimax_h3_rewriter import writer_8b
 
@@ -12,11 +13,29 @@ NODE_DISPLAY_NAME_MAPPINGS.update(writer_8b.NODE_DISPLAY_NAME_MAPPINGS)
 
 log = logging.getLogger(__name__)
 
+try:
+    _resident.install()
+except Exception:  # noqa: BLE001 - the nodes must still load
+    log.warning("[minimax_h3_rewriter] unloading not hooked into ComfyUI's own", exc_info=True)
+
 for _module_name, _label in (
     ("multi_caption", "Multi Reference Caption"),
     ("universal", "Universal Writer"),
+    ("api_writer", "API Universal Writer"),
+    ("qwen_node", "Qwen Rewriter"),
+    ("prompt_check", "Prompt Check"),
+    ("preset_node", "Prompt Presets"),
+    ("reference_adapter", "Reference Adapter"),
+    ("reference_slots", "Reference Slots"),
+    ("refmod_node", "RefMod"),
+    ("reference_encode", "Reference Encode"),
+    ("ph3_node", "P-H3 Prompt Writer"),
+    ("image_writer", "MiniMax-H3 Image Prompt Writer"),
     ("writer_omni", "Prompt Rewriter Omni"),
     ("universal_rewriter", "Universal Rewriter"),
+    ("reduce_node", "Prompt Reducer"),
+    ("embedding_node", "Effect Embeddings"),
+    ("trigger_node", "LoRA Triggers"),
     ("ref_writer", "Reference Writer (Ref2VA)"),
 ):
     try:

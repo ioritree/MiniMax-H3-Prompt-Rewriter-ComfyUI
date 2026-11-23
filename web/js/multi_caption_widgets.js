@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { previewFor, releasePreviews } from "./reference_previews.js";
 import { addSlotSwitches } from "./slot_switches.js";
 import {
     MARGIN,
@@ -14,6 +15,7 @@ import {
     chipElement,
     installStripStyle,
     instructionBand,
+    linkKind,
     readInstructions,
     slotNumber,
     stripHeight as stripHeightFor,
@@ -97,13 +99,15 @@ function arranged(node) {
             if (!slot) continue;
             const link = input.link;
             if (link === null || link === undefined) continue;
-            found.push(slot);
+            found.push({ name: slot, kind: linkKind(node, link) });
         }
-        found.sort((a, b) => slotNumber(a) - slotNumber(b));
-        for (const name of found) {
+        found.sort((a, b) => slotNumber(a.name) - slotNumber(b.name));
+        for (const { name, kind } of found) {
             const on = isEnabled(node, name);
             if (on) counts[group.role] = (counts[group.role] || 0) + 1;
-            entries.push({ name, role: group.role, on, number: on ? counts[group.role] : null });
+            entries.push({
+                name, kind, role: group.role, on, number: on ? counts[group.role] : null,
+            });
         }
     }
     return entries;
@@ -115,12 +119,13 @@ const instructions = (node) => ({
 });
 
 function buildChip(node, entry) {
-    const { chip } = chipElement(entry);
+    const { chip, about } = chipElement(entry, false, previewFor(node, entry.name, entry.kind));
     chip.classList.add("mmx-still");
     chip.appendChild(instructionBand(entry.name, entry.role, instructions(node)));
     chip.title =
         `${entry.name}: ${entry.role.toLowerCase()}` +
         (entry.on ? ` ${entry.number}` : ", switched off") +
+        (about ? `\n${about}` : "") +
         `\nClick to switch it ${entry.on ? "off" : "on"}.`;
 
     chip.addEventListener("pointerdown", (event) => {
@@ -143,6 +148,7 @@ function redraw(node) {
     const entries = arranged(node);
     state.chipCount = entries.length;
 
+    releasePreviews(state.strip);
     state.strip.replaceChildren();
     if (!entries.length) {
         const note = document.createElement("span");

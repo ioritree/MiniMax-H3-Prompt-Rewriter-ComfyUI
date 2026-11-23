@@ -31,17 +31,16 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 
 from comfy_api.latest import io
 
-from . import clip_caption, discovery, media, mtmd_engine
+from . import clip_caption, media, memory, mtmd_engine, previews
+from .discovery import check_encoders as _check_encoders
 from .constants import DEFAULT_OUTPUT_LANGUAGE, OUTPUT_LANGUAGE_NAMES
 from .nodes import (
     BYPASS_CAPTION_TOOLTIP,
     CAPTION_LANGUAGE_TOOLTIP,
-    EMPTY_CAPTION_HINT,
     CAPTION_LENGTHS,
     CATEGORY,
     DEFAULT_OPTIONS,
@@ -54,6 +53,7 @@ from .nodes import (
     cpu_settings,
     next_index,
     slot_instructions,
+    valid_captioner,
 )
 from .progress import NodeProgress
 
@@ -197,22 +197,6 @@ def _collect(supplied: dict[str, dict | None], disabled: set[str]) -> tuple[list
     return assets, skipped
 
 
-def _check_encoders(mmproj_path: str, kinds: set[str]) -> None:
-    """Refuse before any weights move if the projector cannot read what is connected."""
-    header = discovery.gguf_header(mmproj_path)
-    name = os.path.basename(mmproj_path)
-    if "audio" in kinds and not header["audio"]:
-        raise RuntimeError(
-            f"'{name}' was built without an audio encoder, so this model cannot hear the clips "
-            f"you connected. Pick a captioner whose label lists 'audio', or disconnect the audio."
-        )
-    if kinds & {"image", "video"} and not header["vision"]:
-        raise RuntimeError(
-            f"'{name}' was built without a vision encoder, so this model cannot see. Pick a "
-            f"captioner whose label lists 'vision'."
-        )
-
-
 class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
     """Caption a whole set of reference assets and emit one Ref2VA block."""
 
@@ -268,7 +252,8 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
                     options=captioner_choices(),
                     tooltip=(
                         "A multimodal GGUF and its projector. Entries prefixed 'on disk:' are "
-                        "pairs already in your ComfyUI model folders. One model reads every asset "
+                        "pairs already in your ComfyUI model folders, 'ollama:' ones come from "
+                        "your Ollama store. One model reads every asset "
                         "here, so it has to cover every kind you connected -- a vision-only "
                         "captioner cannot take the audio group. Ignored entirely while 'clip' is "
                         "connected."
@@ -331,6 +316,12 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
                     optional=True,
                     tooltip=INSTRUCTIONS_TOOLTIP,
                 ),
+                io.Boolean.Input(
+                    "repeat_last",
+                    default=False,
+                    optional=True,
+                    tooltip=memory.REPEAT_CAPTION_TOOLTIP,
+                ),
             ],
             outputs=[
                 io.String.Output(display_name="reference_assets"),
@@ -338,6 +329,12 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
             ],
             hidden=[io.Hidden.unique_id],
         )
+
+    @classmethod
+    def validate_inputs(
+        cls, model=None, subjects=None, pictures=None, videos=None, audios=None
+    ):
+        return valid_captioner(model)
 
     @classmethod
     def execute(
@@ -358,13 +355,30 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
         context_size=mtmd_engine.CONTEXT_FROM_MODEL,
         bypass=False,
         caption_language=DEFAULT_OUTPUT_LANGUAGE,
+        repeat_last=False,
     ) -> io.NodeOutput:
+        given = dict(locals())
         progress = NodeProgress(cls.hidden.unique_id)
         block = (previous or "").strip()
+
+        previews.announce(
+            cls.hidden.unique_id,
+            [
+                pair
+                for group in (subjects, pictures, videos, audios)
+                for pair in (group or {}).items()
+            ],
+        )
 
         if bypass:
             progress.finish("bypassed")
             return io.NodeOutput(block, "")
+
+        kept = memory.repeat(
+            cls.hidden.unique_id, "MiniMaxH3MultiReferenceCaption", repeat_last, given,
+            label="captions",
+        )
+        reused = list(kept or ())
 
         supplied = {
             "subjects": subjects,
@@ -388,94 +402,124 @@ class MiniMaxH3MultiReferenceCaption(io.ComfyNode):
         if options:
             settings.update(options)
 
+        if reused and len(reused) != len(assets):
+            log.info(
+                "[minimax_h3_rewriter.multi_caption] %d caption(s) kept against %d asset(s) "
+                "now connected, so the ones without a kept caption are described for real",
+                len(reused), len(assets),
+            )
+        described = len(assets) - len(reused)
+
         kinds = {asset.kind for asset in assets}
         model_path = mmproj_path = None
-        if clip is None:
+        if described > 0 and clip is None:
             choice = _resolve_captioner_choice(model)
             if choice.local:
                 model_path, mmproj_path = choice.reference, choice.mmproj
             else:
                 model_path, mmproj_path = _ensure_pair(
                     choice.reference, choice.file, choice.mmproj, "Captioner",
-                    settings["auto_download"], progress,
+                    settings, progress,
                 )
             _check_encoders(mmproj_path, kinds)
-        else:
+        elif described > 0:
             clip_caption.check(clip, kinds)
 
         asked_for = slot_instructions(reference_instructions)
 
-        progress.set_total(len(assets))
-        captions = []
-        empty = 0
-        for done, asset in enumerate(assets):
-            index = next_index(block, asset.role)
-            frames = asset.kind == "video" and _is_frames(asset.value)
-            progress.update(
-                done,
-                f"{asset.role} {index}: reading {asset.slot} ({done + 1} of {len(assets)})",
+        with mtmd_engine.session(
+            model_path or "", mmproj_path or "",
+            assets=described,
+            attachments=mtmd_engine.busiest(
+                (asset.kind for asset in assets), int(max_frames)
+            ),
+            gpu_layers=int(settings["gpu_layers"]),
+            n_ctx=int(context_size),
+            device=settings["device"],
+            backend=settings["llama_backend"],
+            auto_download=settings["auto_download"],
+            progress=progress,
+            thinking=settings["captioner_thinking"],
+        ) as batch:
+            progress.set_total(len(assets))
+            captions = []
+            for done, asset in enumerate(assets):
+                index = next_index(block, asset.role)
+                caption = reused[done] if done < len(reused) else ""
+                frames = asset.kind == "video" and _is_frames(asset.value)
+                verb = "reusing the kept caption for" if caption else "reading"
+                progress.update(
+                    done,
+                    f"{asset.role} {index}: {verb} {asset.slot} ({done + 1} of {len(assets)})",
+                )
+
+                if not caption:
+                    asked = caption_question(
+                        asset.role, length, asked_for.get(asset.slot), caption_language
+                    )
+                    as_image = asset.value if asset.kind == "image" or frames else None
+                    as_audio = asset.value if asset.kind == "audio" else None
+                    as_video = None if frames else (asset.value if asset.kind == "video" else None)
+
+                    if clip is not None:
+                        caption = clip_caption.describe(
+                            clip,
+                            instruction=asked,
+                            image=as_image,
+                            audio=as_audio,
+                            video=as_video,
+                            max_frames=int(max_frames),
+                            seed=int(seed),
+                            settings=settings,
+                            progress=progress,
+                        )
+                    else:
+                        caption = mtmd_engine.describe(
+                            model_path=model_path,
+                            mmproj_path=mmproj_path,
+                            instruction=asked,
+                            image=as_image,
+                            audio=as_audio,
+                            video=as_video,
+                            max_frames=int(max_frames),
+                            gpu_layers=int(settings["gpu_layers"]),
+                            n_ctx=int(context_size),
+                            seed=int(seed),
+                            greedy=True,
+                            max_new_tokens=min(int(settings["max_new_tokens"]), 1024),
+                            temperature=float(settings["temperature"]),
+                            top_p=float(settings["top_p"]),
+                            top_k=int(settings["top_k"]),
+                            device=settings["device"],
+                            backend=settings["llama_backend"],
+                            auto_download=settings["auto_download"],
+                            **cpu_settings(settings),
+                            progress=progress,
+                            server=batch,
+                            thinking=settings["captioner_thinking"],
+                            allow_server=False,
+                        )
+
+                caption = " ".join(caption.split())
+                if not caption and clip is None:
+                    raise RuntimeError(
+                        f"{asset.role} {index}: the captioner returned an empty description. "
+                        "Try captioner_thinking off with a supported llama-server, "
+                        "or another caption model."
+                    )
+                captions.append(caption)
+                block = f"{block}\n{asset.role} {index}: {caption}".strip()
+
+        if described > 0 or len(reused) != len(assets):
+            memory.keep(
+                cls.hidden.unique_id, "MiniMaxH3MultiReferenceCaption", tuple(captions),
+                given, task="caption",
             )
 
-            asked = caption_question(
-                asset.role, length, asked_for.get(asset.slot), caption_language
-            )
-            as_image = asset.value if asset.kind == "image" or frames else None
-            as_audio = asset.value if asset.kind == "audio" else None
-            as_video = None if frames else (asset.value if asset.kind == "video" else None)
-
-            if clip is not None:
-                caption = clip_caption.describe(
-                    clip,
-                    instruction=asked,
-                    image=as_image,
-                    audio=as_audio,
-                    video=as_video,
-                    max_frames=int(max_frames),
-                    seed=int(seed),
-                    settings=settings,
-                    progress=progress,
-                )
-            else:
-                caption = mtmd_engine.describe(
-                    model_path=model_path,
-                    mmproj_path=mmproj_path,
-                    instruction=asked,
-                    image=as_image,
-                    audio=as_audio,
-                    video=as_video,
-                    max_frames=int(max_frames),
-                    gpu_layers=int(settings["gpu_layers"]),
-                    n_ctx=int(context_size),
-                    seed=int(seed),
-                    greedy=True,
-                    max_new_tokens=min(int(settings["max_new_tokens"]), 1024),
-                    temperature=float(settings["temperature"]),
-                    top_p=float(settings["top_p"]),
-                    top_k=int(settings["top_k"]),
-                    device=settings["device"],
-                    backend=settings["llama_backend"],
-                    auto_download=settings["auto_download"],
-                    **cpu_settings(settings),
-                    progress=progress,
-                )
-
-            caption = " ".join(caption.split())
-            if not caption:
-                # One asset that wrote nothing but reasoning must not cost the
-                # ones already described, so this is a skipped line rather than
-                # a raised error -- but the label goes with it: an empty
-                # 'Picture 2:' would be read downstream as a real reference.
-                empty += 1
-                log.warning(
-                    "[minimax_h3_rewriter.multi_caption] %s: %s", asset.slot, EMPTY_CAPTION_HINT
-                )
-                continue
-            captions.append(caption)
-            block = f"{block}\n{asset.role} {index}: {caption}".strip()
-
-        note = f"{len(assets) - empty} described"
-        if empty:
-            note += f", {empty} wrote only reasoning"
+        fresh = max(described, 0)
+        note = f"{fresh} described"
+        if fresh < len(assets):
+            note += f", {len(assets) - fresh} reused"
         if skipped:
             note += f", {skipped} switched off"
         progress.update(len(assets), f"{note}\n{block}")

@@ -28,16 +28,17 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from . import catalog, discovery, engine, media, mtmd_engine
+from . import aspect, catalog, discovery, engine, media, model_sections, mtmd_engine
 from .catalog import FORMAT_GGUF, FORMAT_TRANSFORMERS
 from .constants import (
     DEFAULT_OUTPUT_LANGUAGE,
-    DURATION_MAX,
-    DURATION_MIN,
+    MERGE_AUTO,
     OUTPUT_FIELDS,
     QUANTIZATIONS,
     RESOLUTIONS,
+    duration_widget,
 )
+from . import library, memory, snapshot
 from .fields import split_fields
 from .guide_prompt import BASE_MODES
 from .nodes import (
@@ -52,17 +53,26 @@ from .nodes import (
     _bypassed,
     _ensure_pair,
     _ensure_present,
+    _find,
     _gguf_text,
+    _fix_once,
+    _holding,
     _language_widget,
     cpu_settings,
     _refuse_problem,
+    _report,
     _resolve_adapter,
+    _shown,
+    _valid,
     _verify_base_model,
+    _warn_off_base,
 )
-from .progress import NodeProgress
+from .progress import NodeProgress, announce
 from .prompt_template_8b import build_messages, expected_image_count, normalize_task
 
 log = logging.getLogger(__name__)
+
+SECTION = "models_8b"
 
 BASE_REPO_8B = "Qwen/Qwen3-VL-8B-Instruct"
 
@@ -87,6 +97,7 @@ class BaseChoice:
     file: str = ""
     mmproj: str = ""
     local: bool = False
+    copy_of: str = ""
 
 
 MEDIA_MARKER = "<__media__>"
@@ -138,11 +149,13 @@ def render(messages: list[dict]) -> tuple[str, str]:
     return system, "".join(parts)
 
 
-def frames_for(task: str, first_frame, last_frame) -> list[tuple[str, object]]:
+def frames_for(task: str, first_frame, last_frame, progress=None) -> list[tuple[str, object]]:
     """The frames this task needs, in order, or a message saying which is missing.
 
     Checked before anything loads, because the alternative is a five-gigabyte
-    download followed by llama.cpp counting media markers and refusing.
+    download followed by llama.cpp counting media markers and refusing. Given a
+    ``progress``, a connected frame the task does not read is also announced as
+    a toast rather than only logged.
     """
     connected = {"first_frame": first_frame, "last_frame": last_frame}
     wanted = FRAMES_FOR_TASK[task]
@@ -156,11 +169,13 @@ def frames_for(task: str, first_frame, last_frame) -> list[tuple[str, object]]:
 
     spare = [name for name, value in connected.items() if value is not None and name not in wanted]
     if spare:
-        log.warning(
-            "[minimax_h3_rewriter.writer_8b] task %s does not use %s, so it is ignored; "
-            "pick the task that matches the frames you connected",
-            task.upper(), " or ".join(spare),
+        unread = (
+            f"task {task.upper()} does not use {' or '.join(spare)}, so it is ignored; "
+            f"pick the task that matches the frames you connected"
         )
+        log.warning("[minimax_h3_rewriter.writer_8b] %s", unread)
+        if progress is not None:
+            announce(progress.node_id, [("warn", unread)])
 
     frames = [(name, connected[name]) for name in wanted]
     expected = expected_image_count(task)
@@ -184,12 +199,14 @@ def _build_model_map() -> dict[str, BaseChoice]:
     will caption, but only a Qwen3-VL of this size can carry this LoRA.
     """
     mapping: dict[str, BaseChoice] = {}
+    held = []
     try:
         for entry in catalog.models_8b():
             if not entry.is_gguf:
                 mapping[entry.label] = BaseChoice(
                     reference=entry.repo, fmt=FORMAT_TRANSFORMERS
                 )
+                held.append(_holding(SECTION, entry))
                 continue
             if not entry.mmproj:
                 log.warning(
@@ -199,6 +216,7 @@ def _build_model_map() -> dict[str, BaseChoice]:
             mapping[entry.label] = BaseChoice(
                 reference=entry.repo, file=entry.file, mmproj=entry.mmproj
             )
+            held.append(_holding(SECTION, entry))
     except Exception:
         log.warning("[minimax_h3_rewriter.writer_8b] catalog unreadable", exc_info=True)
     try:
@@ -206,14 +224,16 @@ def _build_model_map() -> dict[str, BaseChoice]:
             arch=discovery.GGUF_ARCH_8B
         ):
             mapping[f"{LOCAL_PREFIX}{label}"] = BaseChoice(
-                reference=model_path, mmproj=mmproj_path, local=True
+                reference=model_path, mmproj=mmproj_path, local=True,
+                copy_of=model_sections.copy_of(held, model_path, mmproj_path),
             )
     except Exception:
         log.warning("[minimax_h3_rewriter.writer_8b] gguf scan failed", exc_info=True)
     try:
         for label, directory in discovery.scan_local(discovery.SHAPE_8B):
             mapping[f"{LOCAL_PREFIX}{label}"] = BaseChoice(
-                reference=directory, fmt=FORMAT_TRANSFORMERS, local=True
+                reference=directory, fmt=FORMAT_TRANSFORMERS, local=True,
+                copy_of=model_sections.copy_of(held, directory),
             )
     except Exception:
         log.warning("[minimax_h3_rewriter.writer_8b] local scan failed", exc_info=True)
@@ -224,22 +244,28 @@ def _build_model_map() -> dict[str, BaseChoice]:
 
 
 def model_choices() -> list[str]:
-    choices = list(_build_model_map())
+    choices = _shown(_build_model_map())
     return _announce(choices or ["(no Qwen3-VL model found - see the model list)"])
 
 
-def _resolve_model_choice(choice: str) -> BaseChoice:
-    _refuse_problem(choice)
-    found = _MODEL_MAP.get(choice)
-    if found is None:
-        found = _build_model_map().get(choice)
-    if found is not None:
-        return found
-    raise RuntimeError(
+def _gone(choice: str) -> str:
+    return (
         f"'{choice}' is not in the 8B model list any more. Pick another entry, put a "
         f"Qwen3-VL '.gguf' and its 'mmproj' together in one folder under ComfyUI's "
         f"models/LLM, or add it under \"models_8b\" in {catalog.user_file()}."
     )
+
+
+def valid_model(choice) -> bool | str:
+    return _valid(choice, _MODEL_MAP or _build_model_map(), SECTION, _gone)
+
+
+def _resolve_model_choice(choice: str) -> BaseChoice:
+    _refuse_problem(choice)
+    found = _find(_MODEL_MAP, _build_model_map, SECTION, choice)
+    if found is not None:
+        return found
+    raise RuntimeError(_gone(choice))
 
 
 def _with_transformers(
@@ -248,7 +274,7 @@ def _with_transformers(
     prompt: str,
     task: str,
     resolution: str,
-    duration: int,
+    duration: float,
     quantization: str,
     settings: dict,
     seed: int,
@@ -267,14 +293,14 @@ def _with_transformers(
     """
     _verify_base_model(choice.reference, progress, discovery.SHAPE_8B, BASE_REPO_8B)
     base_dir = _ensure_present(
-        choice.reference, BASE_SPEC_8B, settings["auto_download"], progress
+        choice.reference, BASE_SPEC_8B, settings, progress
     )
     log.info("[minimax_h3_rewriter.writer_8b] base model: %s", base_dir)
 
     adapter_dir = None
     if settings["use_lora"]:
         adapter_dir = _resolve_adapter(
-            FORMAT_TRANSFORMERS, settings["adapter"], settings["auto_download"], progress,
+            FORMAT_TRANSFORMERS, settings["adapter"], settings, progress,
             catalog.ADAPTERS_8B,
         )
 
@@ -293,7 +319,7 @@ def _with_transformers(
         keep_loaded=keep_loaded,
         device=settings["device"],
         progress=progress,
-        trust_remote_code=bool(settings.get("trust_remote_code", False)),
+        merge_lora=settings.get("merge_lora", MERGE_AUTO),
         images=images or None,
         messages=build_messages(prompt, task, resolution, duration, language),
         seed=int(seed),
@@ -352,7 +378,7 @@ def rewrite_8b(
     prompt: str,
     task: str,
     resolution: str,
-    duration: int,
+    duration: float,
     quantization: str,
     greedy: bool,
     seed: int,
@@ -370,12 +396,12 @@ def rewrite_8b(
     three engines is not something worth having two copies of.
     """
     wanted = normalize_task(task)
-    frames = frames_for(wanted, first_frame, last_frame)
+    frames = frames_for(wanted, first_frame, last_frame, progress)
     choice = _resolve_model_choice(model)
 
     if choice.fmt == FORMAT_TRANSFORMERS:
         return _with_transformers(
-            choice, frames, prompt, wanted, resolution, int(duration),
+            choice, frames, prompt, wanted, resolution, duration,
             quantization, settings, seed, greedy, keep_loaded, progress, language,
         )
 
@@ -384,7 +410,7 @@ def rewrite_8b(
     else:
         model_path, mmproj_path = _ensure_pair(
             choice.reference, choice.file, choice.mmproj, "Base model",
-            settings["auto_download"], progress,
+            settings, progress,
         )
     log.info("[minimax_h3_rewriter.writer_8b] base model: %s", model_path)
 
@@ -397,14 +423,13 @@ def rewrite_8b(
                 + problem
                 + "\nTurn 'use_lora' off to run it as a plain model anyway."
             )
+        _warn_off_base(model_path, discovery.BASE_NAME_8B, progress)
         adapter_path = _resolve_adapter(
-            FORMAT_GGUF, settings["adapter"], settings["auto_download"], progress,
+            FORMAT_GGUF, settings["adapter"], settings, progress,
             catalog.ADAPTERS_8B,
         )
 
-    system, user = render(
-        build_messages(prompt, wanted, resolution, int(duration), language)
-    )
+    system, user = render(build_messages(prompt, wanted, resolution, duration, language))
 
     if frames:
         return _with_frames(
@@ -487,18 +512,9 @@ class MiniMaxH3PromptWriter8B:
                 ),
                 "resolution": (
                     list(RESOLUTIONS),
-                    {"default": "16:9", "tooltip": "Target aspect ratio the rewrite is composed for."},
+                    {"default": "16:9", "socketless": True, "tooltip": aspect.PICKER_TOOLTIP},
                 ),
-                "duration": (
-                    "INT",
-                    {
-                        "default": 10,
-                        "min": DURATION_MIN,
-                        "max": DURATION_MAX,
-                        "step": 1,
-                        "tooltip": "Target clip length in seconds; drives shot count and pacing.",
-                    },
-                ),
+                "duration": duration_widget(),
                 "quantization": (
                     list(QUANTIZATIONS),
                     {
@@ -541,10 +557,16 @@ class MiniMaxH3PromptWriter8B:
                 ),
             },
             "optional": {
+                "aspect_ratio": (
+                    "STRING,COMBO",
+                    {"default": "", "widgetType": "STRING", "tooltip": aspect.TOOLTIP},
+                ),
                 "first_frame": ("IMAGE", {"tooltip": FRAME_TOOLTIPS["first_frame"]}),
                 "last_frame": ("IMAGE", {"tooltip": FRAME_TOOLTIPS["last_frame"]}),
                 "options": (OPTIONS_TYPE,),
                 "bypass": ("BOOLEAN", {"default": False, "tooltip": BYPASS_TOOLTIP}),
+                "repeat_last": ("BOOLEAN", {"default": False, "tooltip": memory.REPEAT_TOOLTIP}),
+                "library_pick": ("STRING", {"default": "", "tooltip": library.PICK_TOOLTIP}),
                 "output_language": _language_widget(LORA_LANGUAGE_TOOLTIP),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
@@ -554,6 +576,23 @@ class MiniMaxH3PromptWriter8B:
     RETURN_NAMES = ("rewritten_prompt",) + OUTPUT_FIELDS
     FUNCTION = "rewrite"
     CATEGORY = CATEGORY
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, model=None):
+        return valid_model(model)
+
+    @classmethod
+    def IS_CHANGED(cls, library_pick="", repeat_last=False, unique_id=None, **kwargs):
+        """Whether what this node would hand back without running has changed.
+
+        Neither a record edited in the library window nor an answer edited in
+        the node's own memory touches a single input, so without this the
+        answer would come back out of ComfyUI's execution cache, still saying
+        what it said before the edit.
+        """
+        return library.stamp(library_pick, repeat_last) + memory.stamp(
+            unique_id, repeat_last
+        )
 
     def rewrite(
         self,
@@ -568,31 +607,76 @@ class MiniMaxH3PromptWriter8B:
         keep_model_loaded,
         first_frame=None,
         last_frame=None,
+        aspect_ratio=None,
         options=None,
         bypass=False,
+        repeat_last=False,
+        library_pick="",
         output_language=DEFAULT_OUTPUT_LANGUAGE,
         unique_id=None,
     ):
+        given = dict(locals())
         if bypass:
             return _bypassed(unique_id, prompt, OUTPUT_FIELDS)
 
-        if not (prompt or "").strip():
+        chosen, saved = library.picked(
+            library_pick, repeat_last, "MiniMaxH3PromptWriter8B",
+            1 + len(OUTPUT_FIELDS), unique_id,
+            having=["image" for frame in (first_frame, last_frame) if frame is not None],
+            keep_loaded=keep_model_loaded,
+        )
+        if chosen is not None:
+            return chosen
+
+        kept = memory.repeat(unique_id, "MiniMaxH3PromptWriter8B", repeat_last and not saved, given)
+        if kept is not None:
+            return kept
+
+        if not saved and not (prompt or "").strip():
             raise ValueError("prompt must not be empty")
+
+        resolution = aspect.resolve(aspect_ratio, resolution)
 
         settings = dict(DEFAULT_OPTIONS)
         if options:
             settings.update(options)
 
         progress = NodeProgress(unique_id)
-        text = rewrite_8b(
+        text = saved or rewrite_8b(
             model, prompt, task, resolution, duration, quantization,
             greedy, seed, keep_model_loaded, settings, progress,
             first_frame, last_frame, output_language,
         )
 
+        having = ["image" for frame in (first_frame, last_frame) if frame is not None]
+        if not saved:
+            text = _fix_once(
+                text, progress,
+                lambda extra: rewrite_8b(
+                    model, prompt + extra, task, resolution, duration, quantization,
+                    greedy, seed, keep_model_loaded, settings, progress,
+                    first_frame, last_frame, output_language,
+                ),
+                OUTPUT_FIELDS, task=task, duration=duration, having=having, settings=settings,
+            )
         fields = split_fields(text)
-        progress.text(text[-2000:] if text else "(empty rewrite)", force=True)
-        return (text,) + tuple(fields[name] for name in OUTPUT_FIELDS)
+        if not saved:
+            _report(
+                progress, text, fields, OUTPUT_FIELDS,
+                task=task, duration=duration,
+                having=having, settings=settings,
+            )
+        outputs = (text,) + tuple(fields[name] for name in OUTPUT_FIELDS)
+        if saved:
+            return outputs
+        memory.keep(
+            unique_id, "MiniMaxH3PromptWriter8B", outputs, given,
+            references=snapshot.take(
+                (("first_frame", "image", first_frame), ("last_frame", "image", last_frame))
+            ),
+            fields=OUTPUT_FIELDS,
+        )
+        return outputs
 
 
 NODE_CLASS_MAPPINGS = {

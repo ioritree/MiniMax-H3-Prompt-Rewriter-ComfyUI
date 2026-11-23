@@ -16,11 +16,41 @@ export function refresh(node) {
     node[REFRESH]?.();
 }
 
+const RATIO_BOX_W = 34;
+const RATIO_BOX_H = 22;
+const RATIO_BOX_MIN = 4;
+const RATIO_GAP = 4;
+const RATIO_ITEM_W = RATIO_BOX_W + 2;
+const RATIO_ITEM_MAX = 72;
+const RATIO_ROW_H = 38;
+
 const BASE_STYLE_ID = "minimax-h3-controls-style";
+
+const TICK_SVG =
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'" +
+    "%3E%3Cpolyline points='3.4,7.3 6,10.1 10.9,3.9' fill='none' stroke='%23fff'" +
+    " stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E";
 
 const BASE_STYLE = `
 .mmx-note { font-size: 11px; color: var(--descrip-text, #999);
     font-family: system-ui, sans-serif; }
+
+.mmx-tick { flex: 0 0 14px; width: 14px; height: 14px; box-sizing: border-box;
+    border-radius: 3px; cursor: pointer; background: #2B2B2B;
+    border: 1px solid #6A6A6A; }
+.mmx-tick.mmx-on { background-color: #4A9D5B; border-color: #4A9D5B;
+    background-image: url("${TICK_SVG}"); background-repeat: no-repeat;
+    background-position: center; background-size: 14px 14px; }
+
+.mmx-buttons { display: flex; width: 100%; height: 100%; gap: 6px;
+    font-family: system-ui, sans-serif; }
+.mmx-buttons button { flex: 1 1 0; min-width: 0; font: inherit; font-size: 12px;
+    padding: 0 8px; border-radius: 6px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--input-text, #ddd); background: var(--comfy-input-bg, #2b2b2b);
+    border: 1px solid var(--border-color, #4e4e4e); }
+.mmx-buttons button:hover { background: var(--comfy-menu-bg, #353535); }
+.mmx-buttons button:active { background: #3B7DD8; border-color: #3B7DD8; color: #fff; }
 
 .mmx-seg-row { display: flex; width: 100%; height: 100%; overflow: hidden;
     border: 1px solid var(--border-color, #4e4e4e); border-radius: 6px;
@@ -35,8 +65,6 @@ const BASE_STYLE = `
 .mmx-seg.mmx-shut { opacity: 0.4; cursor: not-allowed; }
 .mmx-seg.mmx-on.mmx-shut { background: #8A3B3B; opacity: 1; }
 
-/* Tabs are the same control with a different promise: the strip below them
-   changes, so they are attached to it rather than floating in a box. */
 .mmx-seg-row.mmx-tabs { border: 0; border-radius: 0; gap: 3px;
     border-bottom: 2px solid #3B7DD8; align-items: stretch; }
 .mmx-tabs .mmx-seg { flex-direction: column; justify-content: center; gap: 1px;
@@ -46,15 +74,17 @@ const BASE_STYLE = `
 .mmx-seg-sub { font-size: 9px; line-height: 10px; font-weight: 400;
     opacity: 0.75; }
 
-.mmx-ratios { display: flex; gap: 4px; width: 100%; height: 100%;
+.mmx-ratios { display: flex; flex-wrap: wrap; align-content: center;
+    justify-content: center; gap: ${RATIO_GAP}px; width: 100%; height: 100%;
     overflow: hidden; font-family: system-ui, sans-serif; }
-.mmx-ratio { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column;
+.mmx-ratio { flex: 1 1 0; min-width: ${RATIO_ITEM_W}px; max-width: ${RATIO_ITEM_MAX}px;
+    display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 3px; cursor: pointer;
     user-select: none; touch-action: none; border-radius: 5px;
     border: 1px solid transparent; }
 .mmx-ratio.mmx-on { border-color: #3B7DD8; background: rgba(59, 125, 216, 0.16); }
-/* Without flex: 0 0 auto these are shrunk to fit and every ratio draws the
-   same rectangle, which is the one thing the control exists to show. */
+.mmx-ratios.mmx-driven { opacity: 0.4; }
+.mmx-ratios.mmx-driven .mmx-ratio { cursor: not-allowed; }
 .mmx-box { flex: 0 0 auto; box-sizing: border-box;
     border: 1.5px solid var(--descrip-text, #999); border-radius: 2px; }
 .mmx-ratio.mmx-on .mmx-box { border-color: #7FB2F5;
@@ -76,6 +106,53 @@ export function installBaseStyle() {
     installStyle(BASE_STYLE_ID, BASE_STYLE);
 }
 
+export function tickBox(on) {
+    installBaseStyle();
+    const box = document.createElement("div");
+    box.className = "mmx-tick" + (on ? " mmx-on" : "");
+    return box;
+}
+
+export const BUTTON_H = 24;
+const BUTTON_MARGIN = 4;
+
+export function buttonRow(node, name, buttons) {
+    installBaseStyle();
+
+    const row = document.createElement("div");
+    row.className = "mmx-buttons";
+    const made = buttons.map((spec) => {
+        const button = document.createElement("button");
+        button.textContent = spec.label;
+        if (spec.tooltip) button.title = spec.tooltip;
+        button.addEventListener("click", () => spec.onClick(button));
+        row.appendChild(button);
+        return button;
+    });
+
+    const widget = node.addDOMWidget(name, "minimaxh3_buttons", row, {
+        hideOnZoom: false,
+        margin: BUTTON_MARGIN,
+        hideInPanel: true,
+        getValue: () => undefined,
+        setValue: () => {},
+        getMinHeight: () => BUTTON_H + 2 * BUTTON_MARGIN,
+        getMaxHeight: () => BUTTON_H + 2 * BUTTON_MARGIN,
+    });
+    widget.serialize = false;
+    widget.serializeValue = () => undefined;
+    return { widget, buttons: made };
+}
+
+export function told(button, text, seconds = 2.5) {
+    if (!button) return;
+    const before = button.textContent;
+    button.textContent = text;
+    setTimeout(() => {
+        button.textContent = before;
+    }, seconds * 1000);
+}
+
 export function widgetNamed(node, name) {
     return node.widgets?.find((w) => w.name === name);
 }
@@ -84,12 +161,33 @@ export function widgetValues(node, name) {
     return widgetNamed(node, name)?.options?.values ?? [];
 }
 
+let telling = false;
+
+export function graphChanged() {
+    if (telling) return;
+    telling = true;
+    queueMicrotask(() => {
+        telling = false;
+        try {
+            const tracker = app.extensionManager?.workflow?.activeWorkflow?.changeTracker;
+            if (tracker?.captureCanvasState) tracker.captureCanvasState();
+            else tracker?.checkState?.();
+        } catch (error) {
+            console.error(
+                "[MiniMax-H3 Prompt Rewriter] the workflow was not told that its graph changed",
+                error
+            );
+        }
+    });
+}
+
 export function setWidgetValue(node, name, value) {
     const widget = widgetNamed(node, name);
     if (!widget || widget.value === value) return;
     widget.value = value;
     widget.callback?.(value, app.canvas, node);
     refresh(node);
+    graphChanged();
 }
 
 export function showWidget(node, name, shown) {
@@ -161,29 +259,48 @@ export function renderSegments(holder, items, extraClass = "") {
     }
 }
 
-const RATIO_BOX_W = 28;
-const RATIO_BOX_H = 22;
-
 function ratioBox(ratio) {
     const [width, height] = ratio.split(":").map(Number);
     const box = document.createElement("div");
     box.className = "mmx-box";
     if (!width || !height) return box;
     const scale = Math.min(RATIO_BOX_W / width, RATIO_BOX_H / height);
-    box.style.width = `${Math.max(6, Math.round(width * scale))}px`;
-    box.style.height = `${Math.max(6, Math.round(height * scale))}px`;
+    box.style.width = `${Math.max(RATIO_BOX_MIN, Math.round(width * scale))}px`;
+    box.style.height = `${Math.max(RATIO_BOX_MIN, Math.round(height * scale))}px`;
     return box;
 }
+
+export function ratiosHeight(node, name) {
+    const count = widgetValues(node, name).length || 1;
+    const usable = Math.max(node.size?.[0] ?? 300, 120) - 2 * MARGIN - RATIO_GAP;
+    const perRow = Math.max(1, Math.floor((usable + RATIO_GAP) / (RATIO_ITEM_W + RATIO_GAP)));
+    const rows = Math.max(1, Math.ceil(count / perRow));
+    return rows * RATIO_ROW_H + (rows - 1) * RATIO_GAP;
+}
+
+export const ASPECT_INPUT = "aspect_ratio";
+export const RESOLUTION_WIDGET = "resolution";
+
+export function drivenByWire(node) {
+    const input = node.inputs?.find((slot) => slot.name === ASPECT_INPUT);
+    return !!input && input.link !== null && input.link !== undefined;
+}
+
+const DRIVEN_TITLE =
+    "aspect_ratio is connected and decides the ratio, so this is not consulted. " +
+    "Unplug it to choose here again.";
 
 export function renderRatios(node, holder, name) {
     if (!holder) return;
     const chosen = widgetNamed(node, name)?.value;
+    const driven = drivenByWire(node);
+    holder.classList.toggle("mmx-driven", driven);
 
     holder.replaceChildren();
     for (const ratio of widgetValues(node, name)) {
         const item = document.createElement("div");
-        item.className = "mmx-ratio" + (ratio === chosen ? " mmx-on" : "");
-        item.title = `Compose for ${ratio}`;
+        item.className = "mmx-ratio" + (ratio === chosen && !driven ? " mmx-on" : "");
+        item.title = driven ? DRIVEN_TITLE : `Compose for ${ratio}`;
         item.appendChild(ratioBox(ratio));
 
         const label = document.createElement("span");
@@ -194,6 +311,7 @@ export function renderRatios(node, holder, name) {
         item.addEventListener("pointerdown", (event) => {
             event.preventDefault();
             event.stopPropagation();
+            if (drivenByWire(node)) return;
             setWidgetValue(node, name, ratio);
         });
         holder.appendChild(item);

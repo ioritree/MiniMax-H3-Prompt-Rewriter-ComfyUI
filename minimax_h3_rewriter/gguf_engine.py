@@ -32,19 +32,21 @@ import os
 import sys
 import threading
 
-from . import chat_template, devices, gguf_meta, llamacpp
-from .constants import install_command, normalize_seed
+from . import chat_template, checks, devices, gguf_meta, llamacpp, resident
+from .constants import EMPTY_ANSWER_HINT, install_command, normalize_seed
 from .progress import NodeProgress
 
 log = logging.getLogger(__name__)
 
-_STATE: dict = {"key": None, "llama": None, "lora": None}
+_STATE: dict = {"key": None, "llama": None, "lora": None, "name": ""}
 _LOCK = threading.RLock()
 
 LORA_MODERN = "modern"
 LORA_LEGACY = "legacy"
 
 PREVIEW_TAIL = 280
+
+LOOP_EVERY = 32
 RELEASES_URL = "https://github.com/abetlen/llama-cpp-python/releases"
 WHEEL_RELEASE = "v0.3.34-vulkan"
 WHEEL_FILES = {
@@ -391,7 +393,7 @@ def load(
             if "Failed to load model" not in str(error):
                 raise
             raise _load_failure(llama_cpp, model_path) from error
-        _STATE.update(key=key, llama=llama, lora=None)
+        _STATE.update(key=key, llama=llama, lora=None, name=os.path.basename(model_path))
         if api == LORA_MODERN:
             try:
                 _STATE["lora"] = _register_adapter(llama, adapter_path)
@@ -407,7 +409,7 @@ def load(
 def unload() -> None:
     with _LOCK:
         llama = _STATE.get("llama")
-        _STATE.update(key=None, llama=None, lora=None)
+        _STATE.update(key=None, llama=None, lora=None, name="")
     if llama is not None:
         _release_adapters(llama)
         close = getattr(llama, "close", None)
@@ -422,6 +424,11 @@ def unload() -> None:
 
 def is_loaded() -> bool:
     return _STATE["llama"] is not None
+
+
+def holding() -> str:
+    """The file name of the model that is loaded, or the empty string."""
+    return _STATE["name"] if _STATE["llama"] is not None else ""
 
 
 def _render(llama, messages: list[dict[str, str]]) -> str:
@@ -477,6 +484,7 @@ def generate(
     pieces: list[str] = []
     produced = 0
     interrupted = False
+    looped = False
     for chunk in stream:
         try:
             piece = chunk["choices"][0]["text"]
@@ -492,21 +500,42 @@ def generate(
         if _interrupted():
             interrupted = True
             break
+        if produced % LOOP_EVERY == 0 and checks.looping("".join(pieces)):
+            looped = True
+            log.info(
+                "[minimax_h3_rewriter.gguf.generate] stopping at a repetition after %d tokens",
+                produced,
+            )
+            break
 
-    if interrupted:
+    if interrupted or looped:
         close = getattr(stream, "close", None)
         if callable(close):
             try:
                 close()
             except Exception:
                 log.debug("[minimax_h3_rewriter.gguf.generate] stream close failed", exc_info=True)
+
+    if interrupted:
         import comfy.model_management as mm
 
         raise mm.InterruptProcessingException()
 
+    text = "".join(pieces).strip()
+    if not text:
+        name = os.path.basename(str(getattr(llama, "model_path", "") or "")) or "The model"
+        what = f"{produced} token(s) of blank space" if produced else "not a single token"
+        raise RuntimeError(
+            f"{name} wrote nothing: it ended its answer after {what}, so there is no "
+            f"prompt to hand on. {EMPTY_ANSWER_HINT}"
+        )
+
     if progress is not None:
-        progress.finish(f"Done · {produced} tokens")
-    return "".join(pieces).strip()
+        if looped:
+            progress.finish(f"Stopped at a repetition · {produced} tokens")
+        else:
+            progress.finish(f"Done · {produced} tokens")
+    return text
 
 
 def rewrite(
@@ -520,11 +549,16 @@ def rewrite(
     threads: int = -1,
     **generation,
 ) -> str:
-    """Load (or reuse) the GGUF rewriter, generate once, release unless kept."""
-    llama = load(model_path, adapter_path, gpu_layers, n_ctx, device, progress, threads)
-    try:
-        return generate(llama, progress=progress, **generation)
-    finally:
-        del llama
-        if not keep_loaded:
-            unload()
+    """Load (or reuse) the GGUF rewriter, generate once, release unless kept.
+
+    Under ``resident.in_use`` from the load on: an unload asked for from another
+    thread would close the context this call is reading from.
+    """
+    with resident.in_use():
+        llama = load(model_path, adapter_path, gpu_layers, n_ctx, device, progress, threads)
+        try:
+            return generate(llama, progress=progress, **generation)
+        finally:
+            del llama
+            if not keep_loaded:
+                unload()

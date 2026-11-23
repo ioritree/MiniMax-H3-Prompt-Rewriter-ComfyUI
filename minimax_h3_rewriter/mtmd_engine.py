@@ -27,14 +27,23 @@ Two differences from ``cli_engine`` are worth knowing:
 Which models actually work here is a much shorter list than the set of
 multimodal GGUFs on the Hub: the projector format has to be one ``mtmd``
 understands. See ``models.json`` for the ones this pack has been run against.
+
+A run with several references to read does not want a process each. ``session``
+holds one model open for the whole loop -- see ``server_engine`` -- and hands
+``describe`` something to ask instead of something to start. Explicit caption
+thinking control can also select a server for one asset, when the CLI lacks
+that flag. An unavailable server retains the CLI path with a warning if the
+requested thinking mode cannot be applied. Writer callers default to ``auto``
+and retain their original routing.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 
-from . import devices, discovery, llamacpp, media, runner
+from . import checks, devices, discovery, llama_flags, llamacpp, media, runner, server_engine
 from .constants import answer_only, normalize_seed
 from .progress import NodeProgress
 
@@ -55,6 +64,14 @@ TOKENS_PER_ATTACHMENT = 4096
 
 CONTEXT_FLOOR = 8192
 
+FRAME_MAX_TOKENS = 768
+
+MEDIA_MIN_TOKENS = 128
+
+TEXT_SLACK = 256
+
+TEXT_CHARS_PER_TOKEN = 3.0
+
 VRAM_HEADROOM = 2 * 1024 ** 3
 
 OUT_OF_MEMORY = (
@@ -71,6 +88,8 @@ CONTEXT_EXCEEDED = (
     "n_batch",
     "find a memory slot",
 )
+
+DEFAULT_SYSTEM = "You are a helpful assistant"
 
 
 def _size_of(path: str) -> int:
@@ -176,8 +195,8 @@ def _failure_hint(
         return (
             f"That is the other direction: the pictures did not fit the context, which was "
             f"{size}. Raise 'context_size' -- or 'n_ctx' on the Options node -- or lower "
-            f"'max_frames': mtmd charges a frame by its resolution, so a long clip at full "
-            f"size is expensive."
+            f"'max_frames': the pictures are already shrunk to share the context, but not "
+            f"below {MEDIA_MIN_TOKENS} tokens each, and this many did not fit even so."
         )
     return (
         "Not every multimodal GGUF works here: llama.cpp's mtmd has to understand the "
@@ -203,6 +222,7 @@ def build_command(
     device: str = devices.AUTO,
     adapter_path: str | None = None,
     system_prompt: str = "",
+    thinking: str = llama_flags.AUTO,
     threads: int = -1,
     poll: int = -1,
     cache_type: str = "default",
@@ -243,6 +263,7 @@ def build_command(
         ]
     if system_prompt:
         command += ["--system-prompt", system_prompt]
+    command += llama_flags.reasoning_arguments(binary, thinking)
     # Last, so the instruction is never mistaken for a value of another flag.
     command += ["--prompt", instruction]
     return command
@@ -261,20 +282,99 @@ def clip_note(count: int, seconds: float) -> str:
     )
 
 
+def expected_attachments(
+    image=None, audio=None, video=None, max_frames: int = media.DEFAULT_MAX_FRAMES
+) -> int:
+    """How many attachments the inputs will make, known before any of them is decoded."""
+    limit = max(int(max_frames), 1)
+    count = limit if video is not None else 0
+    if image is not None:
+        shape = getattr(image, "shape", None)
+        batch = int(shape[0]) if shape is not None and len(shape) == 4 else 1
+        count += min(max(batch, 1), limit)
+    return count + (1 if audio is not None else 0)
+
+
+def media_room(
+    n_ctx: int,
+    model_path: str,
+    instruction: str = "",
+    system_prompt: str = "",
+    max_new_tokens: int = DEFAULT_MAX_TOKENS,
+) -> int | None:
+    """Tokens of context left for the media, or None when the context is not known.
+
+    ``n_ctx`` is what the run asks for, and 0 there is the model's own, read off
+    its header. What is set aside is the answer's ceiling and the text of the
+    turn, counted generously: a turn that overflows is refused whole, after
+    every picture in it has been encoded.
+    """
+    context = int(n_ctx or 0)
+    if context <= 0 and model_path:
+        try:
+            context = int(discovery.gguf_header(model_path).get("context") or 0)
+        except Exception:
+            context = 0
+    if context <= 0:
+        return None
+    text = (len(instruction or "") + len(system_prompt or "")) / TEXT_CHARS_PER_TOKEN
+    return max(0, context - int(max_new_tokens) - int(text) - TEXT_SLACK)
+
+
+def pixels_each(room: int | None, count: int, ceiling: int = 0) -> int:
+    """The ``max_pixels`` that lets ``count`` pictures share ``room`` tokens; 0 leaves them be.
+
+    mtmd charges a picture by its resolution, and nothing on this path used to
+    shrink one: eight frames of a 1080p clip are over twenty thousand tokens,
+    which no 8k context holds. So the room is split between the pictures, and
+    ``ceiling`` caps a share larger than the picture needs -- for a clip's
+    frames, the 768 tokens Qwen's own video processor allows one. Never below
+    ``MEDIA_MIN_TOKENS``: a frame smaller than that says nothing, and a context
+    that tight is better refused with the hint than filled with smudges.
+    """
+    if room is None:
+        tokens = int(ceiling)
+    else:
+        tokens = max(int(room), 0) // max(int(count), 1)
+        if ceiling > 0:
+            tokens = min(tokens, int(ceiling))
+        tokens = max(tokens, MEDIA_MIN_TOKENS)
+    return tokens * media.PATCH ** 2 if tokens > 0 else 0
+
+
 def attachments_from(
     workspace: media.Workspace,
     image=None,
     audio=None,
     video=None,
     max_frames: int = media.DEFAULT_MAX_FRAMES,
+    room: int | None = None,
+    max_seconds: float = 0.0,
 ) -> tuple[list[tuple[str, str]], list[str], str]:
-    """Write the connected inputs to disk. Returns ``(attachments, notes, note)``."""
+    """Write the connected inputs to disk. Returns ``(attachments, notes, note)``.
+
+    ``room`` is the context left for the media -- see ``media_room`` -- and the
+    pictures are shrunk to share it. A sound is not shrunk, so it is paid for
+    first. None leaves a picture as it came and holds a clip's frames to
+    ``FRAME_MAX_TOKENS`` only.
+
+    ``max_seconds`` stops a clip's frames at the length of the video it is a
+    reference for -- see ``media.clip_window``; 0 reads it to its end.
+    """
     attachments: list[tuple[str, str]] = []
     notes: list[str] = []
     note = ""
 
+    sound = media.audio_file(audio, workspace) if audio is not None else ""
+    if sound and room is not None:
+        room -= int(media.wav_seconds(sound) * media.AUDIO_TOKENS_PER_SECOND)
+    pictures = expected_attachments(image, None, video, max_frames)
+
     if video is not None:
-        paths, total, seconds = media.video_frames(video, workspace, max_frames)
+        paths, total, seconds = media.video_frames(
+            video, workspace, max_frames, pixels_each(room, pictures, FRAME_MAX_TOKENS),
+            max_seconds=max_seconds,
+        )
         attachments.extend(("image", path) for path in paths)
         notes.append(f"{len(paths)} of {total} video frames" if total > len(paths)
                      else f"video, {len(paths)} frames")
@@ -282,18 +382,118 @@ def attachments_from(
             note = clip_note(len(paths), seconds)
 
     if image is not None:
-        paths = media.image_files(image, workspace, max_frames)
+        batch = expected_attachments(image, None, None, max_frames)
+        paths = media.image_files(
+            image, workspace, max_frames,
+            max_pixels=pixels_each(room, pictures, FRAME_MAX_TOKENS if batch > 1 else 0),
+        )
         attachments.extend(("image", path) for path in paths)
         total = int(getattr(image, "shape", [len(paths)])[0])
         notes.append(
             f"{len(paths)} of {total} frames" if total > len(paths) else f"{len(paths)} image(s)"
         )
 
-    if audio is not None:
-        attachments.append(("audio", media.audio_file(audio, workspace)))
+    if sound:
+        attachments.append(("audio", sound))
         notes.append("audio")
 
     return attachments, notes, note
+
+
+def busiest(kinds, max_frames: int = media.DEFAULT_MAX_FRAMES) -> int:
+    """The most attachments any one description in this batch will carry.
+
+    A server sizes its context once and then serves every request from it, so
+    the number that matters is the largest single ask, not the total: eight
+    frames of one clip have to fit at once, six separate photographs never do.
+    """
+    counts = [max(int(max_frames), 1) if kind == "video" else 1 for kind in kinds]
+    return max(counts) if counts else 1
+
+
+@contextlib.contextmanager
+def session(
+    model_path: str,
+    mmproj_path: str,
+    assets: int,
+    attachments: int = 1,
+    gpu_layers: int = -1,
+    n_ctx: int = CONTEXT_FROM_MODEL,
+    device: str = devices.AUTO,
+    backend: str = "auto",
+    auto_download: bool = True,
+    adapter_path: str | None = None,
+    progress: NodeProgress | None = None,
+    thinking: str = llama_flags.AUTO,
+):
+    """Hold one model for a strip, or to control thinking for a single asset.
+
+    ``auto`` retains the original route. Explicit ``off``/``on`` also prefer
+    a server if only it advertises ``--reasoning``; the operator's ``never``
+    override still wins. Callers with their own session pass ``allow_server=False``
+    to ``describe`` so a failed startup is not repeated for every asset.
+
+    Yields something to pass to :func:`describe` as ``server``, or ``None``.
+    ``None`` is not an error and is not rare -- one asset, a build with no
+    server in it, a machine where the port would not bind -- so callers do not
+    branch on it: ``describe(..., server=None)`` is exactly what they did
+    before this existed.
+
+    The eviction of ComfyUI's own models moves in here for the same reason the
+    loading does. Doing it per description would unload the diffusion model six
+    times over, and the second through sixth would each find nothing to unload
+    and cost a round trip to say so.
+    """
+    device = devices.validate(device)
+    mode = llama_flags.thinking_mode(thinking)
+    held = server_engine.wanted(int(assets))
+    choice = (os.environ.get(server_engine.CHOICE_ENV) or server_engine.AUTO).strip().lower()
+    single_control = mode != llama_flags.AUTO and choice != server_engine.NEVER
+    if not model_path or not mmproj_path or int(assets) < 1 or not (held or single_control):
+        yield None
+        return
+
+    try:
+        captioner = llamacpp.ensure_mtmd(backend, auto_download, progress)
+    except Exception:
+        llama_flags.check_interrupt()
+        log.info(
+            "[minimax_h3_rewriter.mtmd_engine.session] no runtime to hold open",
+            exc_info=True,
+        )
+        yield None
+        return
+
+    if not held and "--reasoning" in llama_flags.supported(captioner):
+        yield None
+        return
+
+    binary = llamacpp.server_beside(captioner)
+    if not binary or (not held and "--reasoning" not in llama_flags.supported(binary)):
+        yield None
+        return
+
+    if progress is not None:
+        progress.text(
+            f"Loading {os.path.basename(model_path)} once for {assets} references",
+            force=True,
+        )
+    runner.free_comfy_vram(device)
+    server = server_engine.open_server(
+        binary,
+        model_path,
+        mmproj_path,
+        gpu_layers,
+        fit_context(model_path, mmproj_path, attachments, device, n_ctx),
+        device,
+        adapter_path,
+        thinking=mode,
+    )
+    try:
+        yield server
+    finally:
+        if server is not None:
+            server.close()
 
 
 def describe(
@@ -317,12 +517,16 @@ def describe(
     backend: str = "auto",
     auto_download: bool = True,
     adapter_path: str | None = None,
-    system_prompt: str = "",
+    system_prompt: str | None = None,
     threads: int = -1,
     poll: int = -1,
     cache_type: str = "default",
     flash_attn: str = "default",
     progress: NodeProgress | None = None,
+    server=None,
+    max_seconds: float = 0.0,
+    thinking: str = llama_flags.AUTO,
+    allow_server: bool = True,
 ) -> str:
     """Fetch the runtime if needed, describe the attachments once, and return the text.
 
@@ -336,8 +540,22 @@ def describe(
     model is told which is the first frame and which is the last, and the two
     can be different sizes. So that caller writes its own files and states the
     order, rather than handing over one IMAGE for this to take apart.
+
+    ``server`` is a model :func:`session` already has open. Given one, this
+    asks it rather than starting ``llama-mtmd-cli``; given ``None``, which is
+    the default and what every caller did before sessions existed, nothing
+    about the run changes. The two paths are held to the same sampling, the
+    same seed, the same instruction and the same system turn -- see
+    ``DEFAULT_SYSTEM``, which is the one of those four that had to be stated
+    rather than assumed -- so which one ran is not visible in the answer.
+
+    ``max_seconds`` is for a clip that is a reference for a video of that
+    length: its frames stop there, as the generator's do.
     """
     device = devices.validate(device)
+    mode = llama_flags.thinking_mode(thinking)
+    if system_prompt is None:
+        system_prompt = DEFAULT_SYSTEM
     if attachments is None and image is None and audio is None and video is None:
         raise ValueError(
             "nothing to describe: connect an image, an audio clip or a video, or type the "
@@ -346,15 +564,34 @@ def describe(
     if attachments is not None and not attachments:
         raise ValueError("nothing to describe: 'attachments' is empty.")
 
-    binary = llamacpp.ensure_mtmd(backend, auto_download, progress)
-
-    with media.Workspace() as workspace:
+    with contextlib.ExitStack() as stack:
+        if server is None and allow_server and mode != llama_flags.AUTO:
+            count = len(attachments) if attachments is not None else expected_attachments(
+                image, audio, video, max_frames,
+            )
+            server = stack.enter_context(session(
+                model_path, mmproj_path, assets=1, attachments=count,
+                gpu_layers=gpu_layers, n_ctx=n_ctx, device=device, backend=backend,
+                auto_download=auto_download, adapter_path=adapter_path,
+                progress=progress, thinking=mode,
+            ))
+        binary = server.binary if server is not None else llamacpp.ensure_mtmd(
+            backend, auto_download, progress,
+        )
+        workspace = stack.enter_context(media.Workspace())
         note = ""
         if attachments is None:
+            n_ctx = server.n_ctx if server is not None else fit_context(
+                model_path, mmproj_path,
+                expected_attachments(image, audio, video, max_frames), device, n_ctx,
+            )
+            room = media_room(n_ctx, model_path, instruction, system_prompt, max_new_tokens)
             attachments, notes, note = attachments_from(
-                workspace, image, audio, video, max_frames
+                workspace, image, audio, video, max_frames, room, max_seconds
             )
         else:
+            if server is None:
+                n_ctx = fit_context(model_path, mmproj_path, len(attachments), device, n_ctx)
             kinds = dict.fromkeys(kind for kind, _path in attachments)
             notes = [
                 f"{sum(kind == wanted for kind, _path in attachments)} {wanted}(s)"
@@ -362,14 +599,17 @@ def describe(
             ]
         if note:
             instruction = f"{note}\n\n{instruction}"
-        n_ctx = fit_context(model_path, mmproj_path, len(attachments), device, n_ctx)
-        command = build_command(
-            binary, model_path, mmproj_path, instruction, attachments,
-            gpu_layers, n_ctx, seed, greedy, max_new_tokens, temperature, top_p, top_k, device,
-            adapter_path, system_prompt, threads, poll, cache_type, flash_attn,
-        )
 
-        runner.free_comfy_vram(device)
+        command = None
+        if server is None:
+            command = build_command(
+                binary, model_path, mmproj_path, instruction, attachments,
+                gpu_layers, n_ctx, seed, greedy, max_new_tokens, temperature, top_p,
+                top_k, device, adapter_path, system_prompt, mode,
+                threads, poll, cache_type, flash_attn,
+            )
+            runner.free_comfy_vram(device)
+
         if progress is not None:
             where = "" if device == devices.AUTO else f" on {device}"
             lora = f" + {os.path.basename(adapter_path)}" if adapter_path else ""
@@ -379,15 +619,29 @@ def describe(
                 force=True,
             )
 
-        def report(whole: str) -> None:
+        def report(whole: str) -> bool:
+            """Drive the bar, and say whether this caption has started cycling.
+
+            The same callback goes to both ``server.ask`` and ``runner.run``,
+            and both honour the verdict, so a repeating caption is stopped
+            whichever of the two is answering.
+            """
             if progress is not None:
                 progress.update(
                     min(len(whole) / CHARS_PER_TOKEN, float(max_new_tokens)),
                     f"Describing · {len(whole)} chars\n{whole[-PREVIEW_TAIL:]}",
                 )
+            return bool(checks.looping(whole))
 
         try:
-            text, stderr_text = runner.run(command, binary, report)
+            if server is not None:
+                n_ctx = server.n_ctx
+                text, stderr_text = server.ask(
+                    instruction, attachments, seed, greedy, max_new_tokens,
+                    temperature, top_p, top_k, system_prompt, report,
+                ), ""
+            else:
+                text, stderr_text = runner.run(command, binary, report)
         except runner.ChildFailed as error:
             raise RuntimeError(
                 f"{error}\n\n"
