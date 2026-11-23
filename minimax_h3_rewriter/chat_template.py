@@ -38,12 +38,37 @@ FORCED_THINKING = re.compile(
 )
 
 
+#: Inkling 2 ignores enable_thinking and thinks at a numeric reasoning_effort
+#: that defaults to 0.9 when the caller passes none. 0 is its off switch. Passing
+#: reasoning_effort=0 instead is not an option: some Qwen3.8 templates reject
+#: any value outside xhigh/medium/low even with thinking off.
+DEFAULT_EFFORT = re.compile(
+    r"(reasoning_effort\s+if\s+reasoning_effort\s+is\s+defined\s+and\s+"
+    r"reasoning_effort\s+is\s+not\s+none\s+else\s+)[0-9.]+"
+)
+
+#: Even at effort 0 Inkling opens a <|content_thinking|> turn of its own, since
+#: its template has no generation prompt. Opening the text turn for it is what
+#: makes it answer straight away.
+INKLING_ANSWER = "<|message_model|><|content_text|>"
+
+
 class TemplateError(RuntimeError):
     pass
 
 
 def _environment():
+    from jinja2.ext import Extension
     from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    class Generation(Extension):
+        """HF's {% generation %} marks assistant tokens for training masks; render the body as is."""
+
+        tags = {"generation"}
+
+        def parse(self, parser):
+            next(parser.stream)
+            return parser.parse_statements(("name:endgeneration",), drop_needle=True)
 
     def raise_exception(message):
         raise TemplateError(message)
@@ -56,7 +81,7 @@ def _environment():
         # rendered prompt deterministic, which the seed contract depends on.
         return ""
 
-    env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+    env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=[Generation])
     env.globals["raise_exception"] = raise_exception
     env.globals["strftime_now"] = strftime_now
     env.filters["tojson"] = tojson
@@ -97,7 +122,10 @@ def render(
     if not template:
         raise TemplateError("the model file carries no chat template")
 
+    answer = ""
     if not enable_thinking:
+        template, effort = DEFAULT_EFFORT.subn(r"\g<1>0", template)
+        answer = INKLING_ANSWER if effort and add_generation_prompt else ""
         template, forced = FORCED_THINKING.subn("", template)
         if forced:
             log.debug(
@@ -117,7 +145,7 @@ def render(
         )
 
     try:
-        return attempt(messages)
+        return attempt(messages) + answer
     except Exception as error:
         folded = _fold_system(messages)
         if folded is None:
@@ -127,7 +155,7 @@ def render(
             "folding it into the first user turn", error,
         )
         try:
-            return attempt(folded)
+            return attempt(folded) + answer
         except Exception:
             raise error
 
