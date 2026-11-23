@@ -182,6 +182,7 @@ NODE_SECTIONS: dict[str, tuple[NodeSection, ...]] = {
     "MiniMaxH3PromptReducer": _at(("model", "writers")),
     "MiniMaxH3ReferenceCaption": _at(("model", "captioners")),
     "MiniMaxH3MultiReferenceCaption": _at(("model", "captioners")),
+    "MiniMaxH3ReferenceWriterRef": _at(("captioner", "captioners"), ("writer", "writers")),
     "MiniMaxH3UniversalWriter": _at(
         ("caption_model", "captioners"), ("writer_model", "writers")
     ),

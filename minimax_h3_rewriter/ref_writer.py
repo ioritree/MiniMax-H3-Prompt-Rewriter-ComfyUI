@@ -69,8 +69,11 @@ from .nodes import (
     caption_question,
     captioner_choices,
     cpu_settings,
+    named_verdicts,
     next_index,
     slot_instructions,
+    valid_captioner,
+    valid_writer,
     writer_choices,
 )
 from .progress import NodeProgress
@@ -275,6 +278,13 @@ class MiniMaxH3ReferenceWriterRef(io.ComfyNode):
                 io.String.Output(display_name="captions"),
             ],
             hidden=[io.Hidden.unique_id],
+        )
+
+    @classmethod
+    def validate_inputs(cls, captioner=None, writer=None):
+        return named_verdicts(
+            ("captioner", valid_captioner(captioner)),
+            ("writer", valid_writer(writer)),
         )
 
     @classmethod

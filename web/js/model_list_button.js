@@ -13,6 +13,7 @@ const NODE_SECTIONS = {
     MiniMaxH3PromptReducer: [["model", "writers"]],
     MiniMaxH3ReferenceCaption: [["model", "captioners"]],
     MiniMaxH3MultiReferenceCaption: [["model", "captioners"]],
+    MiniMaxH3ReferenceWriterRef: [["captioner", "captioners"], ["writer", "writers"]],
     MiniMaxH3UniversalWriter: [
         ["caption_model", "captioners"],
         ["writer_model", "writers"],
