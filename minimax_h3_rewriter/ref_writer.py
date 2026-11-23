@@ -412,6 +412,7 @@ class MiniMaxH3ReferenceWriterRef(io.ComfyNode):
                     auto_download=settings["auto_download"],
                     **cpu_settings(settings),
                     progress=progress,
+                    thinking=settings["captioner_thinking"],
                 )
 
             caption = " ".join(caption.split())
