@@ -1509,6 +1509,7 @@ class MiniMaxH3PromptRewriter:
                 lambda extra: rewrite_t2va(
                     model, prompt + extra, resolution, duration, quantization,
                     greedy, seed, keep_model_loaded, settings, progress,
+                    language=output_language,
                 ),
                 OUTPUT_FIELDS, task="T2VA", duration=duration, having=(), settings=settings,
             )
