@@ -8,8 +8,8 @@ import { app } from "../../scripts/app.js";
 // output_language '' and self_check -1, and validation refused them.
 //
 // Each layout below is the widget order of that release. A saved array of
-// exactly that length, with a language name where output_language sat, is
-// dealt back out by name; every widget the layout does not name gets its
+// that layout, with a language name where output_language sat, is dealt
+// back out by name; every widget the layout does not name gets its
 // default back, since positional restore has already written a stray value
 // into it. trust_remote_code is gone upstream and its value is dropped.
 const LANGUAGES = ["繁體中文", "简体中文", "English", "日本語", "한국어"];
@@ -48,13 +48,25 @@ const LAYOUTS = {
     ],
 };
 
-function savedOnOldFork(layout, values) {
-    if (!Array.isArray(values) || values.length !== layout.length) return false;
+function oldForkLayout(layout, values) {
     const language = layout.indexOf("output_language");
     if (language >= 0) return LANGUAGES.includes(values[language]);
     // Options: trust_remote_code's boolean, then threads' integer.
     const threads = layout.indexOf("threads");
     return typeof values[threads - 1] === "boolean" && Number.isInteger(values[threads]);
+}
+
+// The old array as saved, or one that was restored misaligned and saved again
+// (the frontend re-saves open tabs on its own): its head is still the old
+// array, and the widget that broke validation still holds a stray value.
+function savedOnOldFork(layout, values, widgets) {
+    if (!Array.isArray(values) || values.length < layout.length) return false;
+    if (!oldForkLayout(layout, values)) return false;
+    if (values.length === layout.length) return true;
+    const names = widgets.map((widget) => widget.name);
+    const language = names.indexOf("output_language");
+    if (layout.includes("output_language")) return !LANGUAGES.includes(values[language]);
+    return typeof values[names.indexOf("prompt_file")] !== "string";
 }
 
 app.registerExtension({
@@ -68,7 +80,7 @@ app.registerExtension({
             const defaults = new Map((this.widgets ?? []).map((widget) => [widget.name, widget.value]));
             const result = configure.call(this, info, ...rest);
             const values = info?.widgets_values;
-            if (!savedOnOldFork(layout, values)) return result;
+            if (!savedOnOldFork(layout, values, this.widgets ?? [])) return result;
 
             for (const widget of this.widgets ?? []) {
                 if (defaults.has(widget.name)) widget.value = defaults.get(widget.name);
